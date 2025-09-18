@@ -19,9 +19,8 @@ BATCH_SIZE = 10
 OUTPUT_DIR = "part1_results"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLASSES = 1000
-PGD_STEPS = 40 # Steps for PGD attack
+PGD_STEPS = 40
 
-# Base epsilon grids from writeup
 BASE_EPS_LINF_GRID = np.linspace(0, 8/255, 9)
 BASE_EPS_L2_GRID = np.linspace(0, 3.0, 10) 
 
@@ -65,11 +64,9 @@ def get_dataloader(num_images):
         T.ToTensor()
     ])
     
-    # Use streaming=True to avoid downloading the full dataset
     dataset = datasets.load_dataset("mrm8488/ImageNet1K-val", split="train", streaming=True)
     dataset = dataset.map(lambda x: {'image': transform(x['image']), 'label': x['label']})
     
-    # Load the model *just* for pre-filtering
     print("Loading model for pre-filtering...")
     base_model = torchvision.models.resnet18(weights=torchvision.models.ResNet18_Weights.IMAGENET1K_V1)
     model = NormalizedModel(base_model).to(DEVICE).eval()
@@ -97,7 +94,6 @@ def get_dataloader(num_images):
     images_tensor = torch.cat(clean_images)
     labels_tensor = torch.cat(clean_labels)
     
-    # Create target labels
     target_labels = torch.tensor([
         (l.item() + random.randint(1, NUM_CLASSES - 1)) % NUM_CLASSES for l in labels_tensor
     ]).to(DEVICE)
@@ -105,7 +101,7 @@ def get_dataloader(num_images):
     dataset = torch.utils.data.TensorDataset(images_tensor, labels_tensor, target_labels)
     loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
     
-    del base_model, model # Free up memory
+    del base_model, model
     torch.cuda.empty_cache()
     return loader
 
@@ -118,7 +114,7 @@ def plot_asr_curves(eps_grid, ce_asr, cw_asr, title, filename):
     ax.plot(eps_grid, ce_asr, 'o-', label='Cross-Entropy Loss', color='royalblue')
     ax.plot(eps_grid, cw_asr, 's-', label='Carlini-Wagner Loss', color='firebrick')
     
-    ax.set_xlabel('Epsilon (ε)', fontsize=12)
+    ax.set_xlabel('Epsilon', fontsize=12)
     ax.set_ylabel('Attack Success Rate (ASR)', fontsize=12)
     ax.set_title(title, fontsize=14, pad=15)
     ax.legend(fontsize=11)
@@ -203,7 +199,7 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
                 norm=norm, loss_fn=loss_fn, targeted=targeted,
                 target_labels=target_labels if targeted else None,
                 num_steps=PGD_STEPS, device=DEVICE,
-                step_size=epsilon / 4 # As specified in writeup
+                step_size=epsilon / 4
             )
             
             # 2. Check predictions
@@ -234,8 +230,8 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
                         # Save data for the example plot
                         if first_success_data is None:
                             first_success_data = {
-                                'clean_img': images[j].cpu(), # Save on CPU
-                                'adv_img': adv_images[j].cpu(), # Save on CPU
+                                'clean_img': images[j].cpu(),
+                                'adv_img': adv_images[j].cpu(),
                                 'true_label_idx': true_label.item(),
                                 'adv_label_idx': pred.item(),
                                 'eps': epsilon, 'norm': norm, 
@@ -320,37 +316,36 @@ def main():
                 first_successful_attack = first_success
                 
     # 4. Generate and Print Tables (Deliverable 1)
-    print("\n--- Median ε* Tables ---")
+    print("\n--- Median Epsilon* Tables ---")
     for targeted_str in ['untargeted', 'targeted']:
         table_data = []
         for norm in ['linf', 'l2']:
             ce_median = median_eps_star[targeted_str][norm]['ce']
             cw_median = median_eps_star[targeted_str][norm]['cw']
             table_data.append([
-                f"L-{norm[-1] if norm == 'l2' else '∞'}", 
+                f"{norm.upper() if norm == 'linf' else 'L2'}", 
                 f"{ce_median:.4f}", 
                 f"{cw_median:.4f}"
             ])
         
         headers = ["Norm", "Cross-Entropy (CE)", "Carlini-Wagner (CW)"]
-        print(f"\n{targeted_str.capitalize()} Attacks (Median ε*):")
+        print(f"\n{targeted_str.capitalize()} Attacks (Median Epsilon*):")
         print(tabulate(table_data, headers=headers, tablefmt="grid"))
         
     # 5. Generate ASR vs. Epsilon Plots (Deliverable 2)
-    print("\n--- Generating ASR vs. ε Plots ---")
+    print("\n--- Generating ASR vs. Epsilon Plots ---")
     for (targeted, norm), data in plot_data.items():
         ce_grid, ce_asr = data['ce']
         cw_grid, cw_asr = data['cw']
         
         # Ensure grids are aligned for plotting
-        # (This is needed if one attack extended the grid and the other didn't)
         combined_grid = sorted(list(set(ce_grid) | set(cw_grid)))
         ce_asr_interp = np.interp(combined_grid, ce_grid, ce_asr)
         cw_asr_interp = np.interp(combined_grid, cw_grid, cw_asr)
 
         target_str = "Targeted" if targeted else "Untargeted"
-        norm_str = norm.replace('inf', '∞')
-        title = f"Success Rate vs. ε ({target_str}, $L_{norm_str}$)"
+        norm_str = "L-inf" if norm == "linf" else "L2"
+        title = f"Success Rate vs. Epsilon ({target_str}, {norm_str})"
         filename = os.path.join(OUTPUT_DIR, f"asr_{target_str.lower()}_{norm}.png")
         
         plot_asr_curves(combined_grid, ce_asr_interp, cw_asr_interp, title, filename)
@@ -360,6 +355,9 @@ def main():
     if first_successful_attack:
         info = first_successful_attack
         
+        # Rerun inference to get confidences
+        
+        # Move images back to device for inference
         clean_img_tensor = info['clean_img'].unsqueeze(0).to(DEVICE)
         adv_img_tensor = info['adv_img'].unsqueeze(0).to(DEVICE)
         
@@ -387,12 +385,12 @@ def main():
         loss_str = info['loss_fn'].upper()
         target_str = "Targeted" if info['targeted'] else "Untargeted"
         
-        title = f"Example Attack ({target_str})\nNorm: {norm_str}, Loss: {loss_str}, ε* = {eps_str}"
+        title = f"Example Attack ({target_str})\nNorm: {norm_str}, Loss: {loss_str}, Epsilon* = {eps_str}"
         filename = os.path.join(OUTPUT_DIR, "example_attack.png")
         
         plot_example_image(
             info['clean_img'], info['adv_img'], 
-            clean_label_str, adv_label_str, # Pass the new strings
+            clean_label_str, adv_label_str,
             title, filename
         )
     else:
