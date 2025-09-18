@@ -1,0 +1,8 @@
+torch
+torchvision
+datasets
+matplotlib
+requests
+pillow
+tqdm
+tabulate
