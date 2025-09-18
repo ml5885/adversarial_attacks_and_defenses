@@ -66,7 +66,6 @@ def get_dataloader(num_images):
     ])
     
     # Use streaming=True to avoid downloading the full dataset
-    # BUG FIX: Corrected dataset name from mrm8848 to mrm8488
     dataset = datasets.load_dataset("mrm8488/ImageNet1K-val", split="train", streaming=True)
     dataset = dataset.map(lambda x: {'image': transform(x['image']), 'label': x['label']})
     
@@ -131,7 +130,7 @@ def plot_asr_curves(eps_grid, ce_asr, cw_asr, title, filename):
     plt.close(fig)
     print(f"Saved plot: {filename}")
     
-def plot_example_image(clean_img, adv_img, clean_label, adv_label, title, filename):
+def plot_example_image(clean_img, adv_img, clean_label_str, adv_label_str, title, filename):
     """Saves a plot of a clean, perturbed, and adversarial image."""
     clean_plot = clean_img.cpu().squeeze(0).permute(1, 2, 0).numpy()
     adv_plot = adv_img.cpu().squeeze(0).permute(1, 2, 0).numpy()
@@ -140,11 +139,19 @@ def plot_example_image(clean_img, adv_img, clean_label, adv_label, title, filena
     # Normalize perturbation for visualization
     perturbation_viz = (perturbation - perturbation.min()) / (perturbation.max() - perturbation.min() + 1e-9)
     
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6))
     
-    ax1.imshow(clean_plot); ax1.set_title(f"Clean Image\nPrediction: {clean_label}"); ax1.axis('off')
-    ax2.imshow(perturbation_viz); ax2.set_title("Perturbation (Normalized)"); ax2.axis('off')
-    ax3.imshow(adv_plot); ax3.set_title(f"Adversarial Image\nPrediction: {adv_label}"); ax3.axis('off')
+    ax1.imshow(clean_plot)
+    ax1.set_title(f"Clean Image\nPrediction: {clean_label_str}")
+    ax1.axis('off')
+    
+    ax2.imshow(perturbation_viz)
+    ax2.set_title("Perturbation (Normalized)")
+    ax2.axis('off')
+
+    ax3.imshow(adv_plot)
+    ax3.set_title(f"Adversarial Image\nPrediction: {adv_label_str}")
+    ax3.axis('off')
     
     fig.suptitle(title, fontsize=16)
     fig.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -227,11 +234,10 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
                         # Save data for the example plot
                         if first_success_data is None:
                             first_success_data = {
-                                'clean_img': images[j].cpu(),
-                                'adv_img': adv_images[j].cpu(),
-                                'true_label': true_label.item(),
-                                'adv_label': pred.item(),
-                                'target_label': target_label.item(),
+                                'clean_img': images[j].cpu(), # Save on CPU
+                                'adv_img': adv_images[j].cpu(), # Save on CPU
+                                'true_label_idx': true_label.item(),
+                                'adv_label_idx': pred.item(),
                                 'eps': epsilon, 'norm': norm, 
                                 'loss_fn': loss_fn, 'targeted': targeted
                             }
@@ -243,7 +249,6 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
         asr_over_eps.append(asr)
         
         # Check stop condition: only break if ASR reaches 100%
-        # BUG FIX: Removed the "or epsilon == 0" to allow loop to continue
         if asr == 1.0:
             print(f"  Reached 100% ASR at eps = {epsilon:.4f}")
             break
@@ -253,7 +258,7 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
     # Collect all found eps_star values (excluding those that never failed, value 0)
     eps_star_list = [v for v in eps_star_map.values() if v > 0]
     
-    # BUG FIX: Only return the part of the eps_grid that was actually tested
+    # Only return the part of the eps_grid that was actually tested
     tested_eps_grid = eps_grid[:len(asr_over_eps)]
     return tested_eps_grid, asr_over_eps, eps_star_list, first_success_data
 
@@ -337,6 +342,8 @@ def main():
         ce_grid, ce_asr = data['ce']
         cw_grid, cw_asr = data['cw']
         
+        # Ensure grids are aligned for plotting
+        # (This is needed if one attack extended the grid and the other didn't)
         combined_grid = sorted(list(set(ce_grid) | set(cw_grid)))
         ce_asr_interp = np.interp(combined_grid, ce_grid, ce_asr)
         cw_asr_interp = np.interp(combined_grid, cw_grid, cw_asr)
@@ -352,8 +359,28 @@ def main():
     print("\n--- Generating Example Attacked Image ---")
     if first_successful_attack:
         info = first_successful_attack
-        clean_label_name = labels_map.get(info['true_label'], info['true_label'])
-        adv_label_name = labels_map.get(info['adv_label'], info['adv_label'])
+        
+        clean_img_tensor = info['clean_img'].unsqueeze(0).to(DEVICE)
+        adv_img_tensor = info['adv_img'].unsqueeze(0).to(DEVICE)
+        
+        clean_label_str = ""
+        adv_label_str = ""
+
+        with torch.no_grad():
+            # Clean image
+            clean_logits = model(clean_img_tensor)
+            clean_probs = F.softmax(clean_logits, dim=1)
+            clean_conf, clean_idx = clean_probs.max(dim=1)
+            clean_label_name = labels_map.get(clean_idx.item(), clean_idx.item())
+            clean_label_str = f"{clean_label_name} ({clean_conf.item()*100:.1f}%)"
+
+            # Adversarial image
+            adv_logits = model(adv_img_tensor)
+            adv_probs = F.softmax(adv_logits, dim=1)
+            adv_conf, adv_idx = adv_probs.max(dim=1)
+            adv_label_name = labels_map.get(adv_idx.item(), adv_idx.item())
+            adv_label_str = f"{adv_label_name} ({adv_conf.item()*100:.1f}%)"
+        
         
         eps_str = f"{info['eps']:.4f}"
         norm_str = info['norm'].upper()
@@ -365,7 +392,7 @@ def main():
         
         plot_example_image(
             info['clean_img'], info['adv_img'], 
-            clean_label_name, adv_label_name, 
+            clean_label_str, adv_label_str, # Pass the new strings
             title, filename
         )
     else:
