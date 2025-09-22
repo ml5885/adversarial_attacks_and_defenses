@@ -137,7 +137,7 @@ def main():
     print(f"Using device: {device}")
     
     # Create a directory for plots if it doesn't exist
-    plot_dir = "attack_examples"
+    plot_dir = "results/attack_examples2"
     os.makedirs(plot_dir, exist_ok=True)
     print(f"Saving plots to '{plot_dir}/'")
 

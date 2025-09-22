@@ -16,7 +16,7 @@ import attacks
 
 NUM_IMAGES = 100
 BATCH_SIZE = 10 
-OUTPUT_DIR = "part1_results"
+OUTPUT_DIR = "results/part1_results"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLASSES = 1000
 PGD_STEPS = 40
