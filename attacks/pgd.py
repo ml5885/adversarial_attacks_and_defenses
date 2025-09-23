@@ -5,30 +5,20 @@ from .loss import compute_loss
 
 def _pgd_gradient_step(adv_images, grad, step_size, norm, targeted):
     """Perform a single PGD gradient step."""
+    if norm == "linf":
+        step = step_size * grad.sign()
+    elif norm == "l2":
+        grad_flat = grad.view(grad.size(0), -1)
+        grad_norm = grad_flat.norm(p=2, dim=1).view(-1, 1, 1, 1)
+        norm_grad = grad / (grad_norm + 1e-12)
+        step = step_size * norm_grad
+    else:
+        raise ValueError("Invalid norm type. Choose 'linf' or 'l2'.")
+
     if targeted:
-        if norm == "linf":
-            step = step_size * grad.sign()
-            adv_images = adv_images - step
-        elif norm == "l2":
-            grad_flat = grad.view(grad.size(0), -1)
-            grad_norm = grad_flat.norm(p=2, dim=1).view(-1, 1, 1, 1)
-            norm_grad = grad / (grad_norm + 1e-12)
-            step = step_size * norm_grad
-            adv_images = adv_images - step
-        else:
-            raise ValueError("Invalid norm type. Choose 'linf' or 'l2'.")
-    else:  # Untargeted
-        if norm == "linf":
-            step = step_size * grad.sign()
-            adv_images = adv_images + step
-        elif norm == "l2":
-            grad_flat = grad.view(grad.size(0), -1)
-            grad_norm = grad_flat.norm(p=2, dim=1).view(-1, 1, 1, 1)
-            norm_grad = grad / (grad_norm + 1e-12)
-            step = step_size * norm_grad
-            adv_images = adv_images + step
-        else:
-            raise ValueError("Invalid norm type. Choose 'linf' or 'l2'.")
+        adv_images = adv_images - step  # minimize targeted loss
+    else:
+        adv_images = adv_images + step  # maximize loss (move away from true class)
     return adv_images
 
 
@@ -46,12 +36,13 @@ def _project_delta(delta, epsilon, norm):
     return delta
 
 
-def _initialize_random_perturbation(images, epsilon, norm, device):
-    """Initialize random perturbation within the epsilon-ball."""
+def _initialize_random_perturbation(images, epsilon, norm):
+    """Initialize random perturbation within the epsilon-ball on the same device as images."""
+    device = images.device
     if norm == "linf":
-        delta = torch.empty_like(images).uniform_(-epsilon, epsilon)
+        delta = torch.empty_like(images, device=device).uniform_(-epsilon, epsilon)
     elif norm == "l2":
-        delta = torch.randn_like(images)
+        delta = torch.randn_like(images, device=device)
         delta_flat = delta.view(delta.size(0), -1)
         delta_norm = delta_flat.norm(p=2, dim=1).view(-1, 1, 1, 1)
         delta = delta / (delta_norm + 1e-12)
@@ -73,15 +64,25 @@ def pgd(
     target_labels=None,
     num_steps=40,
     step_size=None,
+    kappa=0.0,
     device=None,
 ):
-    """Projected Gradient Descent (PGD) attack."""
+    """Projected Gradient Descent (PGD) attack.
+
+    Conventions:
+      - Untargeted: gradient ascent on the chosen loss.
+      - Targeted:   gradient descent on the chosen loss.
+
+    For CW loss:
+      - Targeted uses the hinge and we MINIMIZE it.
+      - Untargeted uses negative hinge so ASCENT reduces the hinge.
+    """
     if device is None:
         device = images.device
-    
+
     if step_size is None:
         step_size = epsilon / 4.0
-    
+
     original_images = images.to(device).clone().detach()
     labels = labels.to(device).clone().detach()
     if targeted:
@@ -89,20 +90,28 @@ def pgd(
         target_labels = target_labels.to(device).clone().detach()
 
     model.eval()
-    
-    adv_images = original_images.clone().detach()
-    delta = _initialize_random_perturbation(images, epsilon, norm, device)
 
-    # Initialize adversarial images
-    adv_images = torch.clamp(adv_images + delta, 0, 1).detach()
-    
+    # Random start within epsilon-ball
+    delta = _initialize_random_perturbation(original_images, epsilon, norm)
+    adv_images = torch.clamp(original_images + delta, 0.0, 1.0).detach()
+
     # Iterative PGD steps
     for _ in range(num_steps):
         adv_images.requires_grad = True
+
         logits = model(adv_images)
-        
-        model.zero_grad()
-        loss = compute_loss(logits, labels, loss_fn, targeted, target_labels)
+        model.zero_grad(set_to_none=True)
+        if adv_images.grad is not None:
+            adv_images.grad.zero_()
+
+        loss = compute_loss(
+            logits=logits,
+            labels=labels,
+            loss_fn=loss_fn,
+            targeted=targeted,
+            target_labels=target_labels,
+            kappa=kappa,
+        )
 
         # Compute gradients
         loss.backward()
@@ -111,8 +120,8 @@ def pgd(
         # Gradient step
         adv_images = _pgd_gradient_step(adv_images, grad, step_size, norm, targeted)
 
-        # Project the perturbation back into the epsilon-ball and valid image range
+        # Project the perturbation and clip to valid image range
         delta = _project_delta(adv_images - original_images, epsilon, norm)
-        adv_images = torch.clamp(original_images + delta, 0, 1).detach()
-    
+        adv_images = torch.clamp(original_images + delta, 0.0, 1.0).detach()
+
     return adv_images
