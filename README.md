@@ -69,3 +69,11 @@ TODO:
 
 - Implement GCG-style suffix optimizer and run universality/transferability experiments.
 - Log objective vs. iterations and report ASR.
+
+## References
+
+Our implementation heavily borrows from:
+
+- [MNIST Challenge](https://github.com/MadryLab/mnist_challenge)
+- [CleverHans](https://github.com/cleverhans-lab/cleverhans)
+- [Foolbox](https://github.com/bethgelab/foolbox)

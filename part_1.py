@@ -92,7 +92,7 @@ def get_dataloader(checkpoint_path, num_images):
     dataset = torch.utils.data.TensorDataset(images_tensor, labels_tensor, target_labels)
     loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    del base_model, model
+    del model
     torch.cuda.empty_cache()
     return loader
 
@@ -431,7 +431,7 @@ def main():
     print("Loading ResNet-18 model from local checkpoint...")
     model = load_resnet18(args.ckpt, DEVICE)
 
-    loader = get_dataloader(args.ckpt, args.NUM_IMAGES)
+    loader = get_dataloader(args.ckpt, NUM_IMAGES)
     labels_map = get_imagenet_labels()
 
     # Store raw curves for plotting directly
