@@ -572,7 +572,7 @@ def main():
         (True,  "l2",   BASE_EPS_L2_GRID),
     ]
 
-    run_id = datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
 
     for targeted, norm, base_grid in attack_configs:
         for loss_fn in ["ce", "cw"]:
