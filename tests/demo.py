@@ -18,6 +18,7 @@ matplotlib.rcParams.update({
 })
 
 import attacks
+CW_KAPPA = 0.0
 
 # Standard ImageNet normalization stats
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -222,7 +223,7 @@ def main():
     adv_img = attacks.pgd(
         model, clean_image_tensor, labels_tensor,
         epsilon=epsilon_linf, norm="linf", loss_fn="ce",  
-        targeted=False, num_steps=pgd_steps, device=device
+        targeted=False, num_steps=pgd_steps, device=device, kappa=CW_KAPPA
     )
     adv_label, _ = get_prediction(model, adv_img, labels_map)
     title = format_title("PGD", False, "linf", "ce", epsilon_linf)
@@ -234,7 +235,7 @@ def main():
     adv_img = attacks.pgd(
         model, clean_image_tensor, labels_tensor,
         epsilon=epsilon_linf, norm="linf", loss_fn="cw",  
-        targeted=False, num_steps=pgd_steps, device=device
+        targeted=False, num_steps=pgd_steps, device=device, kappa=CW_KAPPA
     )
     adv_label, _ = get_prediction(model, adv_img, labels_map)
     title = format_title("PGD", False, "linf", "cw", epsilon_linf)
@@ -246,7 +247,7 @@ def main():
     adv_img = attacks.pgd(
         model, clean_image_tensor, labels_tensor,
         epsilon=epsilon_l2, norm="l2", loss_fn="ce",  
-        targeted=False, num_steps=pgd_steps, device=device
+        targeted=False, num_steps=pgd_steps, device=device, kappa=CW_KAPPA
     )
     adv_label, _ = get_prediction(model, adv_img, labels_map)
     title = format_title("PGD", False, "l2", "ce", epsilon_l2)
@@ -258,7 +259,7 @@ def main():
     adv_img = attacks.pgd(
         model, clean_image_tensor, labels_tensor,
         epsilon=epsilon_l2, norm="l2", loss_fn="cw",  
-        targeted=False, num_steps=pgd_steps, device=device
+        targeted=False, num_steps=pgd_steps, device=device, kappa=CW_KAPPA
     )
     adv_label, _ = get_prediction(model, adv_img, labels_map)
     title = format_title("PGD", False, "l2", "cw", epsilon_l2)
@@ -271,7 +272,7 @@ def main():
         model, clean_image_tensor, labels_tensor,
         epsilon=epsilon_linf, norm="linf", loss_fn="ce",  
         targeted=True, target_labels=target_labels_tensor,
-        num_steps=pgd_steps, device=device
+        num_steps=pgd_steps, device=device, kappa=CW_KAPPA
     )
     adv_label, _ = get_prediction(model, adv_img, labels_map)
     title = format_title("PGD", True, "linf", "ce", epsilon_linf, target_label_name)
@@ -284,7 +285,7 @@ def main():
         model, clean_image_tensor, labels_tensor,
         epsilon=epsilon_linf, norm="linf", loss_fn="cw",  
         targeted=True, target_labels=target_labels_tensor,
-        num_steps=pgd_steps, device=device
+        num_steps=pgd_steps, device=device, kappa=CW_KAPPA
     )
     adv_label, _ = get_prediction(model, adv_img, labels_map)
     title = format_title("PGD", True, "linf", "cw", epsilon_linf, target_label_name)
@@ -297,7 +298,7 @@ def main():
         model, clean_image_tensor, labels_tensor,
         epsilon=epsilon_l2, norm="l2", loss_fn="ce",  
         targeted=True, target_labels=target_labels_tensor,
-        num_steps=pgd_steps * 2, device=device
+        num_steps=pgd_steps * 2, device=device, kappa=CW_KAPPA
     )
     adv_label, _ = get_prediction(model, adv_img, labels_map)
     title = format_title("PGD", True, "l2", "ce", epsilon_l2, target_label_name)
@@ -310,7 +311,7 @@ def main():
         model, clean_image_tensor, labels_tensor,
         epsilon=epsilon_l2, norm="l2", loss_fn="cw",  
         targeted=True, target_labels=target_labels_tensor,
-        num_steps=pgd_steps * 2, device=device
+        num_steps=pgd_steps * 2, device=device, kappa=CW_KAPPA
     )
     adv_label, _ = get_prediction(model, adv_img, labels_map)
     title = format_title("PGD", True, "l2", "cw", epsilon_l2, target_label_name)

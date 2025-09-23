@@ -16,6 +16,8 @@ from tabulate import tabulate
 from tqdm import tqdm
 
 import attacks
+from model import load_resnet18
+import utils.part_1 as utils
 
 NUM_IMAGES = 100
 BATCH_SIZE = 10
@@ -31,22 +33,6 @@ BASE_EPS_L2_GRID = np.linspace(0, 3.0, 10)       # equally spaced in [0, 3.0]
 CW_KAPPA = 0.0
 
 
-class NormalizedModel(torch.nn.Module):
-    """Wraps a model to include ImageNet normalization, so attacks can work 
-    on images in the [0, 1] range.
-    """
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-        # Register buffers so they are moved to the correct device
-        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
-        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
-
-    def forward(self, x):
-        x_normalized = (x - self.mean) / self.std
-        return self.model(x_normalized)
-
-
 def get_imagenet_labels():
     """Downloads ImageNet class names."""
     try:
@@ -59,7 +45,7 @@ def get_imagenet_labels():
         return {i: str(i) for i in range(NUM_CLASSES)}
 
 
-def get_dataloader(num_images):
+def get_dataloader(checkpoint_path, num_images):
     """Samples and returns a DataLoader with <num_images> correctly classified
     images from the ImageNet validation set.
     """
@@ -72,10 +58,9 @@ def get_dataloader(num_images):
 
     dataset = datasets.load_dataset("mrm8488/ImageNet1K-val", split="train", streaming=True)
     dataset = dataset.map(lambda x: {"image": transform(x["image"]), "label": x["label"]})
-
+    
     print("Loading model for pre-filtering...")
-    base_model = torchvision.models.resnet18(weights=torchvision.models.ResNet18_Weights.IMAGENET1K_V1)
-    model = NormalizedModel(base_model).to(DEVICE).eval()
+    model = load_resnet18(checkpoint_path, DEVICE)
 
     print(f"Sampling {num_images} correctly classified images...")
     clean_images, clean_labels = [], []
@@ -113,22 +98,20 @@ def get_dataloader(num_images):
 
 
 def plot_two_curves(eps1, asr1, label1, eps2, asr2, label2, title, filename):
-    """Plot two ASR vs epsilon curves without any interpolation or alignment."""
-    plt.rcParams.update({"font.family": "serif"})
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig, ax = plt.subplots(figsize=(8, 5))
+    """Plot two ASR vs epsilon curves."""
+    fig, ax = plt.subplots(figsize=(10, 6))
 
-    ax.plot(eps1, asr1, marker="o", linestyle="-", label=label1, color="royalblue")
-    ax.plot(eps2, asr2, marker="s", linestyle="-", label=label2, color="firebrick")
+    ax.plot(eps1, asr1, marker="o", linestyle="-", label=label1, color="#0072B2")
+    ax.plot(eps2, asr2, marker="s", linestyle="-", label=label2, color="#D55E00")
 
-    ax.set_xlabel("Epsilon", fontsize=12)
-    ax.set_ylabel("Attack Success Rate (ASR)", fontsize=12)
-    ax.set_title(title, fontsize=14, pad=15)
-    ax.legend(fontsize=11)
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5)
+    ax.set_xlabel("Epsilon", fontsize=14)
+    ax.set_ylabel("Attack Success Rate (ASR)", fontsize=14)
+    ax.set_title(title, fontsize=16)
+    ax.legend(loc="lower right", fontsize=12)
+    ax.grid(True, linewidth=0.5, linestyle="--", alpha=0.7)
     ax.set_ylim(-0.05, 1.05)
     ax.set_xlim(left=0)
-    fig.tight_layout()
+    ax.tick_params(axis='both', which='major', labelsize=12)
     plt.savefig(filename)
     plt.close(fig)
     print(f"Saved plot: {filename}")
@@ -198,12 +181,6 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
     eps_star_map = {i: 0.0 for i in range(len(loader.dataset))}
     first_success_data = None
 
-    # Determine the grid step from the base grid
-    if len(base_eps_grid) >= 2:
-        grid_step = float(base_eps_grid[1] - base_eps_grid[0])
-    else:
-        grid_step = (1.0 / 255.0) if norm == "linf" else 0.333333
-
     # 1) Sweep the fixed grid (early stop if ASR reaches 100%)
     reached_full_success = False
     last_eps_tried = None
@@ -230,7 +207,7 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
                 targeted=targeted,
                 target_labels=target_labels if targeted else None,
                 num_steps=PGD_STEPS,
-                step_size=(epsilon / 4.0) if epsilon > 0 else (grid_step / 4.0),
+                step_size=epsilon / 4.0,
                 kappa=(CW_KAPPA if loss_fn == "cw" else 0.0),
                 device=DEVICE,
             )
@@ -352,116 +329,20 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
     return eps_grid, asr_over_eps, eps_star_list, first_success_data, len(eps_grid)
 
 
-def ensure_csv_with_header(csv_path):
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-    if not os.path.exists(csv_path):
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "run_id", "timestamp", "mode",
-                "targeted", "norm", "loss_fn",
-                "epsilon", "asr",
-                "image_index", "eps_star",
-                "n_eps"
-            ])
-
-
-def append_curve_rows(csv_path, run_id, targeted, norm, loss_fn, eps_grid, asr_list):
-    with open(csv_path, "a", newline="") as f:
-        writer = csv.writer(f)
-        ts = datetime.utcnow().isoformat()
-        for eps, asr in zip(eps_grid, asr_list):
-            writer.writerow([
-                run_id, ts, "curve",
-                int(targeted), norm, loss_fn,
-                float(eps), float(asr),
-                "", "",  # image_index, eps_star not used here
-                ""       # n_eps
-            ])
-
-
-def append_eps_star_rows(csv_path, run_id, targeted, norm, loss_fn, eps_star_list):
-    with open(csv_path, "a", newline="") as f:
-        writer = csv.writer(f)
-        ts = datetime.utcnow().isoformat()
-        for idx, eps_star in enumerate(eps_star_list):
-            writer.writerow([
-                run_id, ts, "eps_star",
-                int(targeted), norm, loss_fn,
-                "", "",         # epsilon, asr
-                idx, float(eps_star),  # image_index, eps_star
-                ""              # n_eps
-            ])
-
-
-def append_meta_row(csv_path, run_id, targeted, norm, loss_fn, n_eps):
-    with open(csv_path, "a", newline="") as f:
-        writer = csv.writer(f)
-        ts = datetime.utcnow().isoformat()
-        writer.writerow([
-            run_id, ts, "meta",
-            int(targeted), norm, loss_fn,
-            "", "",  # epsilon, asr
-            "", "",  # image_index, eps_star
-            int(n_eps)
-        ])
-
-
-def load_results_from_csv(csv_path):
-    """Load curves and eps_star entries from CSV, grouped by condition."""
-    curves = {}
-    eps_stars = {}
-    n_eps_meta = {}
-
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"CSV not found at {csv_path}")
-
-    with open(csv_path, "r", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            mode = row["mode"]
-            targeted = bool(int(row["targeted"])) if row["targeted"] != "" else False
-            norm = row["norm"]
-            loss_fn = row["loss_fn"]
-            key = (targeted, norm, loss_fn)
-
-            if mode == "curve":
-                eps = float(row["epsilon"])
-                asr = float(row["asr"])
-                curves.setdefault(key, ([], []))
-                curves[key][0].append(eps)
-                curves[key][1].append(asr)
-            elif mode == "eps_star":
-                if row["eps_star"] != "":
-                    eps_star = float(row["eps_star"])
-                    eps_stars.setdefault(key, [])
-                    eps_stars[key].append(eps_star)
-            elif mode == "meta":
-                if row["n_eps"] != "":
-                    n_eps_meta[key] = int(row["n_eps"])
-
-    # Sort curves by epsilon
-    for key in list(curves.keys()):
-        eps, asr = curves[key]
-        order = np.argsort(eps)
-        curves[key] = (list(np.array(eps)[order]), list(np.array(asr)[order]))
-
-    return curves, eps_stars, n_eps_meta
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--analysis", action="store_true", help="Skip experiments and load results from CSV to generate plots and tables.")
     parser.add_argument("--csv", type=str, default=DEFAULT_CSV_PATH, help="Path to the CSV file to save/load results.")
+    parser.add_argument("--ckpt", type=str, default="models/resnet18_l2_eps0.ckpt", help="Path to the ResNet-18 checkpoint file.")
     args = parser.parse_args()
 
     csv_path = args.csv
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    ensure_csv_with_header(csv_path)
+    utils.ensure_csv_with_header(csv_path)
 
     if args.analysis:
         print("Analysis mode: loading results from CSV and generating outputs...")
-        curves, eps_stars, n_eps_meta = load_results_from_csv(csv_path)
+        curves, eps_stars, n_eps_meta = utils.load_results_from_csv(csv_path)
         labels_map = get_imagenet_labels()
 
         # Build tables from eps_stars
@@ -521,7 +402,7 @@ def main():
                 nstr = "L-inf" if norm == "linf" else "L2"
                 print(f"{tstr}, {nstr}, {loss_fn.upper()}: {n} epsilon points")
 
-        # Generate plots from curves (no interpolation)
+        # Generate plots from curves
         print("\n--- Generating ASR vs. Epsilon Plots (from CSV) ---")
         for targeted, norm in [(False, "linf"), (False, "l2"), (True, "linf"), (True, "l2")]:
             key_ce = (targeted, norm, "ce")
@@ -540,7 +421,6 @@ def main():
 
             plot_two_curves(ce_eps, ce_asr, "Cross-Entropy (CE)", cw_eps, cw_asr, "Carlini-Wagner (CW)", title, filename)
 
-        # In analysis mode we cannot regenerate example images unless we had serialized them.
         print("\nAnalysis complete. Plots and tables generated from CSV.")
         return
 
@@ -548,11 +428,10 @@ def main():
     print(f"Using device: {DEVICE}")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    print("Loading ResNet-18 model...")
-    base_model = torchvision.models.resnet18(weights=torchvision.models.ResNet18_Weights.IMAGENET1K_V1)
-    model = NormalizedModel(base_model).to(DEVICE).eval()
+    print("Loading ResNet-18 model from local checkpoint...")
+    model = load_resnet18(args.ckpt, DEVICE)
 
-    loader = get_dataloader(NUM_IMAGES)
+    loader = get_dataloader(args.ckpt, args.NUM_IMAGES)
     labels_map = get_imagenet_labels()
 
     # Store raw curves for plotting directly
@@ -595,9 +474,9 @@ def main():
                 median_eps_star["untargeted"][norm][loss_fn] = median_eps
 
             # Save to CSV
-            append_curve_rows(csv_path, run_id, targeted, norm, loss_fn, eps_grid, asr_list)
-            append_eps_star_rows(csv_path, run_id, targeted, norm, loss_fn, eps_star_list)
-            append_meta_row(csv_path, run_id, targeted, norm, loss_fn, n_eps)
+            utils.append_curve_rows(csv_path, run_id, targeted, norm, loss_fn, eps_grid, asr_list)
+            utils.append_eps_star_rows(csv_path, run_id, targeted, norm, loss_fn, eps_star_list)
+            utils.append_meta_row(csv_path, run_id, targeted, norm, loss_fn, n_eps)
 
             # Example image
             if first_success and not first_successful_attack:
@@ -635,7 +514,7 @@ def main():
             nstr = "L-inf" if norm == "linf" else "L2"
             print(f"{tstr}, {nstr}, {loss_fn.upper()}: {n} epsilon points")
 
-    # Plots (no interpolation)
+    # Plots
     print("\n--- Generating ASR vs. Epsilon Plots ---")
     for (targeted, norm), _ in { (False, "linf"): None, (False, "l2"): None, (True, "linf"): None, (True, "l2"): None }.items():
         ce_eps, ce_asr = curves[(targeted, norm, "ce")]
