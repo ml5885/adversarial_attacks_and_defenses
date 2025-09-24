@@ -30,7 +30,8 @@ PGD_STEPS = 40
 BASE_EPS_LINF_GRID = np.linspace(0, 8 / 255, 9)  # {0, 1/255, ..., 8/255}
 BASE_EPS_L2_GRID = np.linspace(0, 3.0, 10)       # equally spaced in [0, 3.0]
 
-CW_KAPPA = 0.0
+# Set to 50 since this is the value used in the MadryLab robust models
+CW_KAPPA = 50.0
 
 
 def get_imagenet_labels():

@@ -1,3 +1,13 @@
+"""
+This module implements the Projected Gradient Descent (PGD) attack.
+
+References:
+    - Nicholas Carlini and David Wagner, "Towards Evaluating the Robustness of Neural Networks," 2017.
+    - The official CW attack implementation: https://github.com/carlini/nn_robust_attacks
+    - The CleverHans PyTorch implementation: https://github.com/cleverhans-lab/cleverhans
+    - PyTorch CW2 implementation by kkew3: https://github.com/kkew3/pytorch-cw2
+"""
+
 import torch
 
 from .loss import compute_loss
