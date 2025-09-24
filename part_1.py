@@ -30,12 +30,8 @@ PGD_STEPS = 40
 BASE_EPS_LINF_GRID = np.linspace(0, 8 / 255, 9)  # {0, 1/255, ..., 8/255}
 BASE_EPS_L2_GRID = np.linspace(0, 3.0, 10)       # equally spaced in [0, 3.0]
 
-# Default kappa when not performing binary search
 CW_KAPPA = 0.0
 
-# Configuration for CW kappa binary search
-CW_BINARY_SEARCH_STEPS = 5
-CW_KAPPA_RANGE = (0.0, 5.0)
 
 def get_imagenet_labels():
     """Downloads ImageNet class names."""
@@ -214,9 +210,6 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
                 step_size=epsilon / 4.0,
                 kappa=(CW_KAPPA if loss_fn == "cw" else 0.0),
                 device=DEVICE,
-                binary_search_kappa_steps=(CW_BINARY_SEARCH_STEPS if loss_fn == "cw" else 0),
-                kappa_min=CW_KAPPA_RANGE[0],
-                kappa_max=CW_KAPPA_RANGE[1],
             )
 
             with torch.no_grad():
@@ -288,9 +281,6 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
                     step_size=(next_eps / 4.0),
                     kappa=(CW_KAPPA if loss_fn == "cw" else 0.0),
                     device=DEVICE,
-                    binary_search_kappa_steps=(CW_BINARY_SEARCH_STEPS if loss_fn == "cw" else 0),
-                    kappa_min=CW_KAPPA_RANGE[0],
-                    kappa_max=CW_KAPPA_RANGE[1],
                 )
 
                 with torch.no_grad():
