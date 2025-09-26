@@ -10,7 +10,7 @@ from torchvision import datasets, transforms
 from attacks.fgsm import fgsm
 
 
-def data_loaders(batch_size=50, download=True, data_root="data"):
+def get_data_loaders(batch_size=50, download=True, data_root="data"):
     """Return data loaders for MNIST train and test sets.
 
     Args:
