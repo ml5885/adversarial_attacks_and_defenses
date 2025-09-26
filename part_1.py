@@ -34,6 +34,7 @@ BASE_EPS_L2_GRID = np.linspace(0, 3.0, 9) # equally spaced in [0, 3.0]
 
 CW_KAPPA = 50.0
 
+plt.rcParams.update({'font.family': 'serif'})
 
 def get_imagenet_labels():
     """Downloads ImageNet class names and returns a dictionary mapping indices to names."""

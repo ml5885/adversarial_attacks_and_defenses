@@ -9,6 +9,7 @@ import csv
 import train
 import model
 
+plt.rcParams.update({'font.family': 'serif'})
 
 def ensure_dir(path):
     if not os.path.exists(path):
@@ -108,13 +109,13 @@ def plot_results(results, out_path):
             marker=style.get("marker", None),
             linestyle="-",
         )
-    ax.set_xlabel("Epsilon", fontsize=14)
-    ax.set_ylabel("Accuracy", fontsize=14)
-    ax.set_title("MNIST Adversarial Training: Accuracy vs. FGSM Perturbation", fontsize=16)
+    ax.tick_params(axis='both', which='major', labelsize=16)
+    ax.set_xlabel("Epsilon", fontsize=24)
+    ax.set_ylabel("Accuracy", fontsize=24)
     ax.set_ylim(0.0, 1.05)
     ax.set_xlim(0.0, max(max(k for acc_dict in results.values() for k in acc_dict.keys()), 0.3))
     ax.grid(True, linewidth=0.5, linestyle="--", alpha=0.7)
-    ax.legend(loc="best", fontsize=12)
+    ax.legend(loc="best", fontsize=16)
     plt.tight_layout()
     plt.savefig(out_path)
     plt.close(fig)
