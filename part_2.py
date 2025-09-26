@@ -14,12 +14,13 @@ def ensure_dir(path):
         os.makedirs(path, exist_ok=True)
 
 
-def run_experiment(max_steps):
+def run_experiment(max_steps, log_every):
     """Train baseline, FGSM and TRADES models and evaluate them.
 
     Args:
         max_steps: Maximum number of optimisation steps for each
             training routine.
+        log_every: Print training progress every this many steps.
 
     Returns:
         A nested dictionary mapping each training regime ("baseline",
@@ -34,7 +35,7 @@ def run_experiment(max_steps):
     results: Dict[str, Dict[float, float]] = {}
 
     # Baseline (standard training)
-    print("Training baseline model...")
+    print("Training baseline model...", flush=True)
     baseline_model = model.ConvNet()
     baseline_model = train.train_baseline(
         baseline_model,
@@ -42,13 +43,15 @@ def run_experiment(max_steps):
         device=device,
         lr=1e-4,
         max_steps=max_steps,
+        log_every=log_every,
     )
+    print("Evaluating baseline model...", flush=True)
     results["baseline"] = train.evaluate_fgsm(
         baseline_model, test_loader, device=device, epsilons=eval_eps
     )
 
     # FGSM adversarial training
-    print("Training FGSM adversarially trained model...")
+    print("Training FGSM adversarially trained model...", flush=True)
     fgsm_model = model.ConvNet()
     fgsm_model = train.train_fgsm(
         fgsm_model,
@@ -57,13 +60,15 @@ def run_experiment(max_steps):
         epsilon_train=0.3,
         lr=1e-4,
         max_steps=max_steps,
+        log_every=log_every,
     )
+    print("Evaluating FGSM adversarially trained model...", flush=True)
     results["fgsm"] = train.evaluate_fgsm(
         fgsm_model, test_loader, device=device, epsilons=eval_eps
     )
 
     # TRADES training
-    print("Training TRADES adversarially trained model...")
+    print("Training TRADES adversarially trained model...", flush=True)
     trades_model = model.ConvNet()
     trades_model = train.train_trades(
         trades_model,
@@ -73,7 +78,9 @@ def run_experiment(max_steps):
         beta=6.0,
         lr=1e-4,
         max_steps=max_steps,
+        log_every=log_every,
     )
+    print("Evaluating TRADES model...", flush=True)
     results["trades"] = train.evaluate_fgsm(
         trades_model, test_loader, device=device, epsilons=eval_eps
     )
@@ -128,6 +135,12 @@ def main() -> None:
         help="Maximum number of optimisation steps for each training regime (default: 100000)",
     )
     parser.add_argument(
+        "--log-every",
+        type=int,
+        default=500,
+        help="Print training progress every N steps (default: 500)",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         default=os.path.join("results", "part_2"),
@@ -136,13 +149,15 @@ def main() -> None:
     args = parser.parse_args()
 
     ensure_dir(args.output_dir)
-    results = run_experiment(max_steps=args.max_steps)
-    # Also print a simple table to the console
-    print("\nAccuracy results:")
+    results = run_experiment(max_steps=args.max_steps, log_every=args.log_every)
+
+    # Print results table
+    print("\nAccuracy results:", flush=True)
     for name, acc_dict in results.items():
-        print(f"  {name}:")
+        print(f"  {name}:", flush=True)
         for eps, acc in sorted(acc_dict.items()):
-            print(f"    epsilon={eps:.1f}: accuracy={acc:.4f}")
+            print(f"    epsilon={eps:.1f}: accuracy={acc:.4f}", flush=True)
+
     # Plot and save
     plot_path = os.path.join(args.output_dir, "accuracy_vs_epsilon.png")
     plot_results(results, plot_path)

@@ -34,7 +34,7 @@ def get_data_loaders(batch_size=50, download=True, data_root="data"):
     return train_loader, test_loader
 
 
-def train_baseline(model, train_loader, device, lr=1e-4, max_steps=100_000):
+def train_baseline(model, train_loader, device, lr=1e-4, max_steps=100_000, log_every=500):
     """Train a model on clean MNIST data using cross-entropy loss.
 
     This function iterates over the training data until max_steps
@@ -68,11 +68,18 @@ def train_baseline(model, train_loader, device, lr=1e-4, max_steps=100_000):
         loss.backward()
         optimiser.step()
         step += 1
+
+        # Logging
+        if step == 1 or step % log_every == 0 or step == max_steps:
+            with torch.no_grad():
+                preds = logits.argmax(dim=1)
+                acc = (preds == labels).float().mean().item()
+            print(f"[Baseline] step {step}/{max_steps} | loss={loss.item():.4f} | clean_acc={acc:.4f}", flush=True)
     model.eval()
     return model
 
 
-def train_fgsm(model, train_loader, device, epsilon_train=0.3, lr=1e-4, max_steps=100_000):
+def train_fgsm(model, train_loader, device, epsilon_train=0.3, lr=1e-4, max_steps=100_000, log_every=500):
     """Train a model using FGSM adversarial training.
 
     For each batch we generate adversarial examples using a single
@@ -105,18 +112,29 @@ def train_fgsm(model, train_loader, device, epsilon_train=0.3, lr=1e-4, max_step
     
         # Train on adversarial examples
         optimiser.zero_grad(set_to_none=True)
-        logits = model(adv_images)
-    
-        loss = F.cross_entropy(logits, labels)
+        logits_adv = model(adv_images)
+        loss = F.cross_entropy(logits_adv, labels)
+        # Compute accuracies for logging
+        with torch.no_grad():
+            preds_adv = logits_adv.argmax(dim=1)
+            robust_acc = (preds_adv == labels).float().mean().item()
+            clean_logits = model(images)
+            clean_acc = (clean_logits.argmax(dim=1) == labels).float().mean().item()
         loss.backward()
         optimiser.step()
         step += 1
+
+        if step == 1 or step % log_every == 0 or step == max_steps:
+            print(
+                f"[FGSM-AT] step {step}/{max_steps} | loss={loss.item():.4f} | clean_acc={clean_acc:.4f} | robust_acc@eps={epsilon_train:.2f}:{robust_acc:.4f}",
+                flush=True,
+            )
     
     model.eval()
     return model
 
 
-def train_trades(model, train_loader, device, epsilon_train=0.3, beta=6.0, lr=1e-4, max_steps=100_000):
+def train_trades(model, train_loader, device, epsilon_train=0.3, beta=6.0, lr=1e-4, max_steps=100_000, log_every=500):
     """Train a model using the one-step TRADES adversarial defence.
 
     At each training step we first approximate the solution to the
@@ -183,6 +201,15 @@ def train_trades(model, train_loader, device, epsilon_train=0.3, beta=6.0, lr=1e
         loss.backward()
         optimiser.step()
         step += 1
+
+        if step == 1 or step % log_every == 0 or step == max_steps:
+            with torch.no_grad():
+                clean_acc = (logits_nat_final.argmax(dim=1) == labels).float().mean().item()
+                robust_acc = (logits_adv_final.argmax(dim=1) == labels).float().mean().item()
+            print(
+                f"[TRADES] step {step}/{max_steps} | loss={loss.item():.4f} (ce={ce_loss.item():.4f}, kl={kl_loss.item():.4f}) | clean_acc={clean_acc:.4f} | robust_acc@eps={epsilon_train:.2f}:{robust_acc:.4f}",
+                flush=True,
+            )
     model.eval()
     return model
 
@@ -206,8 +233,9 @@ def evaluate_fgsm(model, test_loader, device, epsilons):
     """
     model.to(device)
     model.eval()
-    results = []
+    results: Dict[float, float] = {}
     for eps in epsilons:
+        print(f"Evaluating FGSM at eps={eps:.2f}...", flush=True)
         correct = 0
         total = 0
         for images, labels in test_loader:
@@ -222,4 +250,5 @@ def evaluate_fgsm(model, test_loader, device, epsilons):
             total += labels.size(0)
         accuracy = correct / max(total, 1)
         results[eps] = accuracy
+        print(f"  eps={eps:.2f}: accuracy={accuracy:.4f}", flush=True)
     return results
