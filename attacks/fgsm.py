@@ -11,19 +11,10 @@ def fgsm(
     loss_fn="ce",
     targeted=False,
     target_labels=None,
-    kappa=0.0,
+    kappa=50.0,
     device=None,
 ):
-    """Fast Gradient Sign Method (FGSM) attack.
-
-    Conventions:
-      - Untargeted: take a step in the direction of +grad (gradient ascent on the loss).
-      - Targeted: take a step in the direction of -grad (gradient descent on the loss).
-
-    For CW loss:
-      - Targeted uses the standard hinge on logits and we MINIMIZE it.
-      - Untargeted uses the negative hinge so that ASCENT reduces the hinge toward 0.
-    """
+    """Fast Gradient Sign Method (FGSM) attack. """
     if device is None:
         device = images.device
 
@@ -41,29 +32,22 @@ def fgsm(
 
     # Compute loss
     model.zero_grad(set_to_none=True)
-    if images.grad is not None:
-        images.grad.zero_()
-    loss = compute_loss(
-        logits=logits,
-        labels=labels,
-        loss_fn=loss_fn,
-        targeted=targeted,
-        target_labels=target_labels,
-        kappa=kappa,
-    )
+    loss = compute_loss(logits, labels, loss_fn, targeted, target_labels, kappa)
 
     # Backprop to get gradient w.r.t. input
     loss.backward()
     grad_sign = images.grad.data.sign()
-
-    if targeted:
-        # Move toward the target class (minimize targeted loss)
-        adv_images = images - epsilon * grad_sign
-    else:
-        # Move away from the true class (maximize loss)
-        adv_images = images + epsilon * grad_sign
+    
+    # Gradient step
+    with torch.no_grad():
+        if loss_fn == "ce":
+            if targeted:
+                adv_images = images - epsilon * grad_sign
+            else:
+                adv_images = images + epsilon * grad_sign
+        elif loss_fn == "cw":
+            adv_images = images - epsilon * grad_sign
 
     # Clip to valid range [0, 1]
     adv_images = torch.clamp(adv_images, 0.0, 1.0).detach()
-
     return adv_images
