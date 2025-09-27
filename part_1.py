@@ -3,7 +3,7 @@ import csv
 import os
 import random
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 
 import datasets
 import matplotlib.pyplot as plt
@@ -23,16 +23,12 @@ import utils.part_1 as utils
 # Constants
 NUM_IMAGES = 100
 BATCH_SIZE = 10
-OUTPUT_DIR = "results/part_1"
-DEFAULT_CSV_PATH = os.path.join(OUTPUT_DIR, "results.csv")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLASSES = 1000
 PGD_STEPS = 40
 
 BASE_EPS_LINF_GRID = np.linspace(0, 8 / 255, 9)  # {0, 1/255, ..., 8/255}
 BASE_EPS_L2_GRID = np.linspace(0, 3.0, 9) # equally spaced in [0, 3.0]
-
-CW_KAPPA = 0.0
 
 plt.rcParams.update({'font.family': 'serif'})
 
@@ -164,7 +160,7 @@ def _extend_grid_until_full_success(base_grid, norm_name, last_eps):
     return next_eps, step
 
 
-def compute_asr_for_epsilon(model, loader, epsilon, norm, loss_fn, targeted, device):
+def compute_asr_for_epsilon(args, model, loader, epsilon, norm, loss_fn, targeted, device):
     """Compute ASR and track successes for a given epsilon."""
     successful_attacks = 0
     total_images = 0
@@ -187,7 +183,7 @@ def compute_asr_for_epsilon(model, loader, epsilon, norm, loss_fn, targeted, dev
             target_labels=target_labels if targeted else None,
             num_steps=PGD_STEPS,
             step_size=epsilon / 4.0,
-            kappa=(CW_KAPPA if loss_fn == "cw" else 0.0),
+            kappa=(args.kappa if loss_fn == "cw" else 0.0),
             device=device,
         )
 
@@ -227,7 +223,7 @@ def compute_asr_for_epsilon(model, loader, epsilon, norm, loss_fn, targeted, dev
     return asr, eps_star_map, first_success
 
 
-def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
+def run_fixed_sweep(args, model, loader, norm, loss_fn, targeted, base_eps_grid):
     """Runs a sweep of attacks starting from the fixed epsilon grid.
     If ASR does not reach 100% by the last grid point, keep increasing epsilon
     by the same step size until full success is achieved.
@@ -256,7 +252,7 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
         last_eps_tried = epsilon
 
         asr, eps_star_updates, first_success = compute_asr_for_epsilon(
-            model, loader, epsilon, norm, loss_fn, targeted, DEVICE
+            args, model, loader, epsilon, norm, loss_fn, targeted, DEVICE
         )
         eps_grid.append(epsilon)
         asr_over_eps.append(asr)
@@ -281,7 +277,7 @@ def run_fixed_sweep(model, loader, norm, loss_fn, targeted, base_eps_grid):
             last_eps_tried = next_eps
 
             asr, eps_star_updates, first_success = compute_asr_for_epsilon(
-                model, loader, next_eps, norm, loss_fn, targeted, DEVICE
+                args, model, loader, next_eps, norm, loss_fn, targeted, DEVICE
             )
             eps_grid.append(next_eps)
             asr_over_eps.append(asr)
@@ -326,54 +322,33 @@ def run_analysis_mode(csv_path, output_dir):
                 else:
                     median_eps_star["untargeted"][norm][loss_fn] = median_eps
 
-    # Print tables
     print("\n--- Median Epsilon* Tables (from CSV) ---")
-    for targeted_str in ["untargeted", "targeted"]:
-        table_data = []
-        for norm in ["linf", "l2"]:
-            ce_median = median_eps_star[targeted_str][norm].get("ce", np.inf)
-            cw_median = median_eps_star[targeted_str][norm].get("cw", np.inf)
-            norm_name = "L-inf" if norm == "linf" else "L2"
-            table_data.append([
-                norm_name,
-                f"{ce_median:.6f}" if np.isfinite(ce_median) else "inf",
-                f"{cw_median:.6f}" if np.isfinite(cw_median) else "inf",
-            ])
-        headers = ["Norm", "Cross-Entropy (CE)", "Carlini-Wagner (CW)"]
-        print(f"\n{targeted_str.capitalize()} Attacks (Median Epsilon*):")
-        print(tabulate(table_data, headers=headers, tablefmt="grid"))
-
-    # Print number of epsilon points to reach 100% ASR (if present, else infer from curves)
-    print("\n--- Number of epsilon points to reach 100% ASR (from CSV) ---")
-    for targeted, norm, loss_fn in [
-        (False, "linf", "ce"), (False, "linf", "cw"),
-        (False, "l2",   "ce"), (False, "l2",   "cw"),
-        (True,  "linf", "ce"), (True,  "linf", "cw"),
-        (True,  "l2",   "ce"), (True,  "l2",   "cw"),
-    ]:
-        key = (targeted, norm, loss_fn)
-        n = n_eps_meta.get(key)
-        if n is None and key in curves:
-            eps, asr = curves[key]
-            n = len(eps)
-            # Optional: find first index where ASR hits 1.0
-            for idx, val in enumerate(asr):
-                if val == 1.0:
-                    n = idx + 1
-                    break
-        if n is not None:
-            tstr = "Targeted" if targeted else "Untargeted"
-            nstr = "L-inf" if norm == "linf" else "L2"
-            print(f"{tstr}, {nstr}, {loss_fn.upper()}: {n} epsilon points")
+    txt_filename = os.path.join(output_dir, "median_eps_star_tables.txt")
+    with open(txt_filename, "w") as f:
+        for targeted_str in ["untargeted", "targeted"]:
+            table_data = []
+            for norm in ["linf", "l2"]:
+                ce_median = median_eps_star[targeted_str][norm].get("ce", np.inf)
+                cw_median = median_eps_star[targeted_str][norm].get("cw", np.inf)
+                norm_name = "L-inf" if norm == "linf" else "L2"
+                table_data.append([
+                    norm_name,
+                    f"{ce_median:.6f}" if np.isfinite(ce_median) else "inf",
+                    f"{cw_median:.6f}" if np.isfinite(cw_median) else "inf",
+                ])
+            headers = ["Norm", "Cross-Entropy (CE)", "Carlini-Wagner (CW)"]
+            print(f"\n{targeted_str.capitalize()} Attacks (Median Epsilon*):")
+            table_str = tabulate(table_data, headers=headers, tablefmt="grid")
+            print(table_str)
+            f.write(f"{targeted_str.capitalize()} Attacks (Median Epsilon*):\n")
+            f.write(table_str + "\n\n")
+    print(f"Saved both tables to: {txt_filename}")
 
     # Generate plots from curves
     print("\n--- Generating ASR vs. Epsilon Plots (from CSV) ---")
     for targeted, norm in [(False, "linf"), (False, "l2"), (True, "linf"), (True, "l2")]:
         key_ce = (targeted, norm, "ce")
         key_cw = (targeted, norm, "cw")
-        if key_ce not in curves or key_cw not in curves:
-            print(f"Skipping plot for {(targeted, norm)} because one or both curves are missing.")
-            continue
 
         ce_eps, ce_asr = curves[key_ce]
         cw_eps, cw_asr = curves[key_cw]
@@ -416,7 +391,7 @@ def run_experiment_mode(args, output_dir, csv_path):
         (True,  "l2",   BASE_EPS_L2_GRID),
     ]
 
-    run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     for targeted, norm, base_grid in attack_configs:
         for loss_fn in ["ce", "cw"]:
@@ -424,7 +399,7 @@ def run_experiment_mode(args, output_dir, csv_path):
             print(f"\nRunning sweep: {target_str}, {norm.upper()}, {loss_fn.upper()} Loss...")
 
             eps_grid, asr_list, eps_star_list, first_success, n_eps = run_fixed_sweep(
-                model, loader, norm, loss_fn, targeted, base_grid
+                args, model, loader, norm, loss_fn, targeted, base_grid
             )
 
             # Track curves
@@ -449,21 +424,27 @@ def run_experiment_mode(args, output_dir, csv_path):
 
     # Tables
     print("\n--- Median Epsilon* Tables ---")
-    for targeted_str in ["untargeted", "targeted"]:
-        table_data = []
-        for norm in ["linf", "l2"]:
-            ce_median = median_eps_star[targeted_str][norm].get("ce", np.inf)
-            cw_median = median_eps_star[targeted_str][norm].get("cw", np.inf)
-            norm_name = "L-inf" if norm == "linf" else "L2"
-            table_data.append([
-                norm_name,
-                f"{ce_median:.6f}" if np.isfinite(ce_median) else "inf",
-                f"{cw_median:.6f}" if np.isfinite(cw_median) else "inf",
-            ])
+    txt_filename = os.path.join(output_dir, "median_eps_star_tables.txt")
+    with open(txt_filename, "w") as f:
+        for targeted_str in ["untargeted", "targeted"]:
+            table_data = []
+            for norm in ["linf", "l2"]:
+                ce_median = median_eps_star[targeted_str][norm].get("ce", np.inf)
+                cw_median = median_eps_star[targeted_str][norm].get("cw", np.inf)
+                norm_name = "L-inf" if norm == "linf" else "L2"
+                table_data.append([
+                    norm_name,
+                    f"{ce_median:.6f}" if np.isfinite(ce_median) else "inf",
+                    f"{cw_median:.6f}" if np.isfinite(cw_median) else "inf",
+                ])
 
-        headers = ["Norm", "Cross-Entropy (CE)", "Carlini-Wagner (CW)"]
-        print(f"\n{targeted_str.capitalize()} Attacks (Median Epsilon*):")
-        print(tabulate(table_data, headers=headers, tablefmt="grid"))
+            headers = ["Norm", "Cross-Entropy (CE)", "Carlini-Wagner (CW)"]
+            print(f"\n{targeted_str.capitalize()} Attacks (Median Epsilon*):")
+            table_str = tabulate(table_data, headers=headers, tablefmt="grid")
+            print(table_str)
+            f.write(f"{targeted_str.capitalize()} Attacks (Median Epsilon*):\n")
+            f.write(table_str + "\n\n")
+    print(f"Saved both tables to: {txt_filename}")
 
     # Number of epsilon points
     print("\n--- Number of epsilon points to reach 100% ASR ---")
@@ -536,18 +517,22 @@ def run_experiment_mode(args, output_dir, csv_path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--analysis", action="store_true", help="Skip experiments and load results from CSV to generate plots and tables.")
-    parser.add_argument("--csv", type=str, default=DEFAULT_CSV_PATH, help="Path to the CSV file to save/load results.")
+    parser.add_argument("--csv", type=str, default=None, help="Path to the CSV file to save/load results. Defaults to <output_dir>/results.csv.")
     parser.add_argument("--ckpt", type=str, default="models/resnet18_l2_eps0.ckpt", help="Path to the ResNet-18 checkpoint file.")
+    parser.add_argument("--kappa", type=float, default=0.0, help="Confidence parameter for CW loss (default 0.0).")
+    parser.add_argument("--output_dir", type=str, default="results/part_1", help="Directory to write outputs (plots, tables, CSV).")
     args = parser.parse_args()
 
-    csv_path = args.csv
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    out_dir = args.output_dir
+    os.makedirs(out_dir, exist_ok=True)
+
+    csv_path = args.csv if args.csv is not None else os.path.join(out_dir, "results.csv")
     utils.ensure_csv_with_header(csv_path)
 
     if args.analysis:
-        run_analysis_mode(csv_path, OUTPUT_DIR)
+        run_analysis_mode(csv_path, out_dir)
     else:
-        run_experiment_mode(args, OUTPUT_DIR, csv_path)
+        run_experiment_mode(args, out_dir, csv_path)
 
 
 if __name__ == "__main__":
