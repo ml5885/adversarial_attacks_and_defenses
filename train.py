@@ -117,7 +117,6 @@ def train_fgsm(model, train_loader, device, epsilon_train=0.3, lr=1e-4, max_step
         # Compute accuracies for logging
         with torch.no_grad():
             preds_adv = logits_adv.argmax(dim=1)
-            robust_acc = (preds_adv == labels).float().mean().item()
             clean_logits = model(images)
             clean_acc = (clean_logits.argmax(dim=1) == labels).float().mean().item()
         loss.backward()
@@ -126,7 +125,7 @@ def train_fgsm(model, train_loader, device, epsilon_train=0.3, lr=1e-4, max_step
 
         if step == 1 or step % log_every == 0 or step == max_steps:
             print(
-                f"[FGSM-AT] step {step}/{max_steps} | loss={loss.item():.4f} | clean_acc={clean_acc:.4f} | robust_acc@eps={epsilon_train:.2f}:{robust_acc:.4f}",
+                f"[FGSM-AT] step {step}/{max_steps} | loss={loss.item():.4f} | clean_acc={clean_acc:.4f}",
                 flush=True,
             )
     
@@ -135,7 +134,7 @@ def train_fgsm(model, train_loader, device, epsilon_train=0.3, lr=1e-4, max_step
 
 
 def train_trades(model, train_loader, device, epsilon_train=0.3, beta=6.0, lr=1e-4, max_steps=100_000, log_every=500):
-    """Train a model using the one-step TRADES adversarial defence.
+    """Train a model using the one-step TRADES adversarial defense.
 
     At each training step we first approximate the solution to the
     inner maximisation problem by taking a single FGSM step on the
@@ -205,9 +204,8 @@ def train_trades(model, train_loader, device, epsilon_train=0.3, beta=6.0, lr=1e
         if step == 1 or step % log_every == 0 or step == max_steps:
             with torch.no_grad():
                 clean_acc = (logits_nat_final.argmax(dim=1) == labels).float().mean().item()
-                robust_acc = (logits_adv_final.argmax(dim=1) == labels).float().mean().item()
             print(
-                f"[TRADES] step {step}/{max_steps} | loss={loss.item():.4f} (ce={ce_loss.item():.4f}, kl={kl_loss.item():.4f}) | clean_acc={clean_acc:.4f} | robust_acc@eps={epsilon_train:.2f}:{robust_acc:.4f}",
+                f"[TRADES] step {step}/{max_steps} | loss={loss.item():.4f} (ce={ce_loss.item():.4f}, kl={kl_loss.item():.4f}) | clean_acc={clean_acc:.4f}",
                 flush=True,
             )
     model.eval()
