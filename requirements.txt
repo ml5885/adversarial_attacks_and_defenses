@@ -1,3 +1,4 @@
+transformers==4.56.2
 torch
 torchvision
 datasets
@@ -6,3 +7,4 @@ requests
 pillow
 tqdm
 tabulate
+nanogcg
