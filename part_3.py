@@ -288,10 +288,9 @@ def main():
         message=single_message,
         target=single_target,
         model_name=training_models[0],
-        num_steps=200,
-        search_width=256,
-        topk=128,
-        n_replace=1,
+        num_steps=500,
+        search_width=64,
+        topk=64,
         seed=args.seed,
     )
     
