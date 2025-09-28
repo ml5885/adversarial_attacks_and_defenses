@@ -279,7 +279,7 @@ def main():
     loss_traces_per_model = {m: [] for m in training_models}
 
     # Task 1: Single prompt attack on the first behavior using the first training model
-    single_entry = selected_behaviors[0]
+    single_entry = selected_behaviors[1]
     single_message = single_entry["behavior"]
     single_target = single_entry["target_prefix"]
     
@@ -289,8 +289,8 @@ def main():
         target=single_target,
         model_name=training_models[0],
         num_steps=500,
-        search_width=64,
-        topk=64,
+        search_width=512,
+        topk=256,
         seed=args.seed,
     )
     
