@@ -18,28 +18,25 @@ plt.rcParams.update({'font.family': 'serif'})
 HARM_BENCH_VAL_URL = "https://raw.githubusercontent.com/centerforaisafety/HarmBench/refs/heads/main/data/behavior_datasets/harmbench_behaviors_text_val.csv"
 HARM_BENCH_TEST_URL = "https://raw.githubusercontent.com/centerforaisafety/HarmBench/refs/heads/main/data/behavior_datasets/harmbench_behaviors_text_test.csv"
 
+MODEL_DISPLAY_NAMES = {
+    "meta-llama/Llama-3.2-1B-Instruct": "Llama 3.2 1B Instruct",
+    "meta-llama/Llama-3.2-3B-Instruct": "Llama 3.2 3B Instruct",
+    "meta-llama/Llama-3.2-11B-Vision-Instruct": "Llama 3.2 11B Vision Instruct",
+}
+
+def load_model_by_name(model_name: str):
+    return gcg.load_model_by_name(model_name)
 
 def download_behaviors(url: str) -> List[str]:
-    """Download a list of harmful behaviour prompts from a CSV file.
-
-    The HarmBench datasets contain a header row with a column called
-    behavior. Each subsequent row contains one harmful query.
-
-    Args:
-        url: HTTP URL pointing to the CSV file.
-
-    Returns:
-        A list of behaviour strings.
-    """
     resp = requests.get(url)
     resp.raise_for_status()
     lines = resp.text.strip().splitlines()
     reader = csv.DictReader(lines)
     behaviors = []
     for row in reader:
-        behaviour = row.get("Behavior")
-        if behaviour:
-            behaviors.append(behaviour.strip())
+        b = row.get("behavior") or row.get("Behavior")
+        if b:
+            behaviors.append(b.strip())
     return behaviors
 
 
@@ -58,17 +55,21 @@ def plot_loss_trace(loss_trace, title, out_path):
 
 
 def plot_bar_asr(asr, title, out_path):
-    """Create a bar chart of attack success rates per model."""
     fig, ax = plt.subplots(figsize=(8, 6))
     models = list(asr.keys())
+    display_names = [MODEL_DISPLAY_NAMES.get(m, m) for m in models]
     rates = [asr[m] for m in models]
-    ax.bar(models, rates, color=["#0072B2" if m != models[-1] else "#D55E00" for m in models])
+    colors = ["#0072B2"] * len(models)
+    if models:
+        colors[-1] = "#D55E00"
+    ax.bar(display_names, rates, color=colors)
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Attack Success Rate", fontsize=14)
     ax.set_title(title, fontsize=16)
-    ax.grid(axis='y', linewidth=0.5, linestyle="--", alpha=0.7)
+    ax.grid(axis="y", linewidth=0.5, linestyle="--", alpha=0.7)
     for i, v in enumerate(rates):
-        ax.text(i, v + 0.02, f"{v:.2f}", ha='center', va='bottom', fontsize=12)
+        ax.text(i, min(v + 0.03, 1.02), f"{v:.2f}", ha="center", va="bottom", fontsize=12)
+    # plt.xticks(rotation=15, ha="right")
     plt.tight_layout()
     plt.savefig(out_path)
     plt.close(fig)
@@ -76,30 +77,27 @@ def plot_bar_asr(asr, title, out_path):
 
 
 def plot_average_loss_traces(traces, title, out_path):
-    """Plot the average loss trace per model across behaviors.
-    
-    Traces may have different lengths; averaging at each iteration
-    only uses available traces.
-    """
     fig, ax = plt.subplots(figsize=(10, 6))
     colors = ["#0072B2", "#009E73", "#D55E00", "#CC79A7", "#F0E442"]
     for i, (model_name, model_traces) in enumerate(traces.items()):
-        # Find the maximum length among traces for this model
-        max_len = max(len(t) for t in model_traces)
-        mean_trace = []
-        std_trace = []
+        if not model_traces:
+            continue
+        max_len = max(len(t) for t in model_traces if t)
+        if max_len == 0:
+            continue
+        mean_trace, std_trace = [], []
         for step in range(max_len):
             vals = [t[step] for t in model_traces if len(t) > step]
-            if vals:
-                mean_trace.append(np.mean(vals))
-                std_trace.append(np.std(vals))
-            else:
-                # No more traces at this step
+            if not vals:
                 break
+            mean_trace.append(float(np.mean(vals)))
+            std_trace.append(float(np.std(vals)))
         x = list(range(len(mean_trace)))
         color = colors[i % len(colors)]
         ax.plot(x, mean_trace, label=model_name, color=color)
-        ax.fill_between(x, np.array(mean_trace) - np.array(std_trace), np.array(mean_trace) + np.array(std_trace), color=color, alpha=0.2)
+        lo = np.array(mean_trace) - np.array(std_trace)
+        hi = np.array(mean_trace) + np.array(std_trace)
+        ax.fill_between(x, lo, hi, color=color, alpha=0.2)
     ax.set_xlabel("Iteration", fontsize=14)
     ax.set_ylabel("Loss (negative log prob)", fontsize=14)
     ax.set_title(title, fontsize=16)
@@ -115,10 +113,10 @@ def save_results_csv(results, csv_path):
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     if not results:
         return
-    # Determine field names
-    fieldnames = list(results[0].keys())
+    # Union of all keys across rows to avoid missing columns
+    all_fields = sorted({k for row in results for k in row.keys()})
     with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=all_fields, extrasaction="ignore")
         writer.writeheader()
         for row in results:
             writer.writerow(row)
@@ -153,13 +151,13 @@ def main():
     parser.add_argument(
         "--models",
         type=str,
-        default="Qwen/Qwen3-0.6B,Qwen/Qwen3-1.7B,Qwen/Qwen3-4B",
+        default="meta-llama/Llama-3.2-1B-Instruct,meta-llama/Llama-3.2-3B-Instruct",
         help="Comma-separated list of training models for transferability."
     )
     parser.add_argument(
         "--heldout",
         type=str,
-        default="Qwen/Qwen3-8B",
+        default="meta-llama/Llama-3.2-11B-Vision-Instruct",
         help="Held-out model for evaluating transferability."
     )
     parser.add_argument(
@@ -267,7 +265,7 @@ def main():
     suffix_single = res_single["optim_str"]
     loss_trace_single = res_single.get("loss_trace", [])
     # Generate final response on the attacking model
-    model_single, tok_single = gcg.load_qwen_model(training_models[0])
+    model_single, tok_single = load_model_by_name(training_models[0])
     response_single = gcg.generate_model_response(model_single, tok_single, single_message, suffix_single)
     # Save loss trace plot
     loss_plot_path = os.path.join(args.output_dir, "task1_loss.png")
@@ -304,7 +302,7 @@ def main():
         response_results = {}
         # Evaluate on each model for the test prompt
         for m in training_models + [heldout_model]:
-            model, tok = gcg.load_qwen_model(m)
+            model, tok = load_model_by_name(m)
             resp = gcg.generate_model_response(model, tok, test_behaviour, suffix)
             response_results[m] = resp
             success_results[m] = not gcg.is_refusal(resp)
