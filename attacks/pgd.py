@@ -69,13 +69,7 @@ def pgd(
     kappa=0.0,
     device=None,
 ):
-    """Projected Gradient Descent (PGD) attack.
-
-    Direction:
-      - CE, untargeted: maximize loss (ascent)
-      - CE, targeted:   minimize loss (descent)
-      - CW (both):      minimize loss (descent)
-    """
+    """Projected Gradient Descent (PGD) attack."""
     if device is None:
         device = images.device
     if step_size is None:

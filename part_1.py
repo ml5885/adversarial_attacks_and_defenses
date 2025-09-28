@@ -26,8 +26,8 @@ BATCH_SIZE = 10
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLASSES = 1000
 
-BASE_EPS_LINF_GRID = np.linspace(0, 8 / 255, 9)  # {0, 1/255, ..., 8/255}
-BASE_EPS_L2_GRID = np.linspace(0, 3.0, 9) # equally spaced in [0, 3.0]
+BASE_EPS_LINF_GRID = np.linspace(0, 8 / 255, 27)  # denser: ~3x points in [0, 8/255]
+BASE_EPS_L2_GRID = np.linspace(0, 3.0, 27)        # denser: ~3x points in [0, 3.0]
 
 plt.rcParams.update({'font.family': 'serif'})
 
@@ -104,35 +104,35 @@ def plot_two_curves(eps1, asr1, label1, eps2, asr2, label2, norm, title, filenam
     ax.plot(eps1, asr1, marker="o", linestyle="-", label=label1, color="#0072B2")
     ax.plot(eps2, asr2, marker="s", linestyle="-", label=label2, color="#D55E00")
 
-    # Build ticks from the union of both epsilon arrays
+    # Build ticks
     try:
         eps_all = list(eps1) + list(eps2)
     except Exception:
         eps_all = []
-    ticks = sorted({float(x) for x in eps_all}) if eps_all else []
 
-    # Format tick labels
-    if ticks:
-        if norm == "linf":
-            labels = []
-            for t in ticks:
-                if abs(t) < 1e-12:
-                    labels.append("0")
-                else:
-                    n = int(round(t * 255))
-                    # Fallback to decimal if not close to a multiple of 1/255
-                    if abs(t * 255 - n) < 1e-6:
-                        labels.append(f"{n}/255")
-                    else:
-                        labels.append(f"{t:.6f}")
-        else:  # l2
+    if norm == "linf":
+        # Use 1/255-spaced ticks spanning the current x-range
+        if eps_all:
+            max_eps = float(max(eps_all))
+        else:
+            max_eps = 8.0 / 255.0
+        n_end = int(np.ceil(max_eps * 255))
+        n_start = 0
+        ticks = [n / 255.0 for n in range(n_start, n_end + 1)]
+        labels = ["0" if n == 0 else f"{n}/255" for n in range(n_start, n_end + 1)]
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(labels)
+    else:
+        # For L2, keep numeric ticks derived from the union of eps arrays
+        ticks = sorted({float(x) for x in eps_all}) if eps_all else []
+        if ticks:
             labels = []
             for t in ticks:
                 s = f"{t:.3f}"
                 s = s.rstrip('0').rstrip('.') if '.' in s else s
                 labels.append(s)
-        ax.set_xticks(ticks)
-        ax.set_xticklabels(labels)
+            ax.set_xticks(ticks)
+            ax.set_xticklabels(labels)
 
     ax.set_xlabel("Epsilon", fontsize=20)
     ax.set_ylabel("Attack Success Rate (ASR)", fontsize=20)
@@ -140,10 +140,16 @@ def plot_two_curves(eps1, asr1, label1, eps2, asr2, label2, norm, title, filenam
     ax.legend(loc="lower right", fontsize=20)
     ax.grid(True, linewidth=0.5, linestyle="--", alpha=0.7)
     ax.set_ylim(-0.05, 1.05)
-    if ticks:
-        ax.set_xlim(ticks[0], ticks[-1])
+    if norm == "linf":
+        if 'ticks' in locals() and ticks:
+            ax.set_xlim(ticks[0], ticks[-1])
+        else:
+            ax.set_xlim(left=0)
     else:
-        ax.set_xlim(left=0)
+        if 'ticks' in locals() and ticks:
+            ax.set_xlim(ticks[0], ticks[-1])
+        else:
+            ax.set_xlim(left=0)
     ax.tick_params(axis='both', which='major', labelsize=16)
     plt.savefig(filename)
     plt.close(fig)

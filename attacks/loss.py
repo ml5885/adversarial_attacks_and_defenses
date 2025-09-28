@@ -41,7 +41,6 @@ def cw_margin_loss(logits, labels, targeted=False, target_labels=None, kappa=50.
         logits_other = logits.masked_fill(t_mask, float('-inf'))
         other = logits_other.max(dim=1)[0]
 
-        # z_t = torch.einsum('ij,ij->i', logits, t_mask.float())
         z_t = logits.gather(1, t.unsqueeze(1)).squeeze(1)
 
         loss = F.relu(other - z_t + float(kappa))
@@ -54,7 +53,6 @@ def cw_margin_loss(logits, labels, targeted=False, target_labels=None, kappa=50.
     logits_other = logits.masked_fill(y_mask, float('-inf'))
     other = logits_other.max(dim=1)[0]
 
-    # z_y = torch.einsum('ij,ij->i', logits, y_mask.float())
     z_y = logits.gather(1, y.unsqueeze(1)).squeeze(1)
 
     loss = F.relu(z_y - other + float(kappa))
