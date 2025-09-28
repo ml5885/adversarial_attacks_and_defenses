@@ -162,15 +162,19 @@ def train_trades(model, train_loader, device, epsilon_train=0.3, beta=6.0, lr=1e
     optimiser = torch.optim.Adam(model.parameters(), lr=lr)
     step = 0
     data_iter = itertools.cycle(train_loader)
+    
     while step < max_steps:
         images, labels = next(data_iter)
         images, labels = images.to(device), labels.to(device)
+        
         # Create adversarial example using one FGSM step on the KL loss
         x_nat = images.clone().detach()
         x_adv = x_nat.clone().detach().requires_grad_(True)
+        
         # Compute logits for clean and adversarial inputs
         logits_nat = model(x_nat)
         logits_adv = model(x_adv)
+        
         # KL divergence between f(x) and f(x_adv)
         kl = F.kl_div(
             F.log_softmax(logits_adv, dim=1),
@@ -181,6 +185,7 @@ def train_trades(model, train_loader, device, epsilon_train=0.3, beta=6.0, lr=1e
         if x_adv.grad is not None:
             x_adv.grad.zero_()
         kl.backward()
+        
         # Generate adversarial perturbation
         grad_sign = x_adv.grad.data.sign()
         x_adv = x_adv + epsilon_train * grad_sign

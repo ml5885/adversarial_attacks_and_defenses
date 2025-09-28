@@ -26,8 +26,8 @@ BATCH_SIZE = 10
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLASSES = 1000
 
-BASE_EPS_LINF_GRID = np.linspace(0, 8 / 255, 27)  # denser: ~3x points in [0, 8/255]
-BASE_EPS_L2_GRID = np.linspace(0, 3.0, 27)        # denser: ~3x points in [0, 3.0]
+BASE_EPS_LINF_GRID = np.linspace(0, 8 / 255, 18)
+BASE_EPS_L2_GRID = np.linspace(0, 3.0, 18)
 
 plt.rcParams.update({'font.family': 'serif'})
 
@@ -95,44 +95,40 @@ def get_dataloader(checkpoint_path, num_images):
     return loader
 
 
-def plot_two_curves(eps1, asr1, label1, eps2, asr2, label2, norm, title, filename):
-    """Plot two ASR vs epsilon curves with epsilon values as x-axis ticks.
-    For L-infinity, ticks are labeled as fractions of 1/255 (e.g., 1/255).
-    """
+def plot_two_curves(eps1, asr1, label1, eps2, asr2, label2, norm, title, filename, x_ticks=None, x_ticklabels=None, x_xlim=None):
+    """Plot two ASR vs epsilon curves with epsilon values as x-axis ticks."""
     fig, ax = plt.subplots(figsize=(10, 6))
 
     ax.plot(eps1, asr1, marker="o", linestyle="-", label=label1, color="#0072B2")
     ax.plot(eps2, asr2, marker="s", linestyle="-", label=label2, color="#D55E00")
 
-    # Build ticks
-    try:
-        eps_all = list(eps1) + list(eps2)
-    except Exception:
-        eps_all = []
-
-    if norm == "linf":
-        # Use 1/255-spaced ticks spanning the current x-range
-        if eps_all:
-            max_eps = float(max(eps_all))
-        else:
-            max_eps = 8.0 / 255.0
-        n_end = int(np.ceil(max_eps * 255))
-        n_start = 0
-        ticks = [n / 255.0 for n in range(n_start, n_end + 1)]
-        labels = ["0" if n == 0 else f"{n}/255" for n in range(n_start, n_end + 1)]
-        ax.set_xticks(ticks)
-        ax.set_xticklabels(labels)
+    if x_ticks is not None and x_ticklabels is not None:
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_ticklabels)
     else:
-        # For L2, keep numeric ticks derived from the union of eps arrays
-        ticks = sorted({float(x) for x in eps_all}) if eps_all else []
-        if ticks:
-            labels = []
-            for t in ticks:
-                s = f"{t:.3f}"
-                s = s.rstrip('0').rstrip('.') if '.' in s else s
-                labels.append(s)
+        eps_all = list(eps1) + list(eps2)
+
+        if norm == "linf":
+            if eps_all:
+                max_eps = float(max(eps_all))
+            else:
+                max_eps = 8.0 / 255.0
+            n_end = int(np.ceil(max_eps * 255))
+            n_start = 0
+            ticks = [n / 255.0 for n in range(n_start, n_end + 1)]
+            labels = ["0" if n == 0 else f"{n}/255" for n in range(n_start, n_end + 1)]
             ax.set_xticks(ticks)
             ax.set_xticklabels(labels)
+        else:
+            ticks = sorted({float(x) for x in eps_all}) if eps_all else []
+            if ticks:
+                labels = []
+                for t in ticks:
+                    s = f"{t:.3f}"
+                    s = s.rstrip('0').rstrip('.') if '.' in s else s
+                    labels.append(s)
+                ax.set_xticks(ticks)
+                ax.set_xticklabels(labels)
 
     ax.set_xlabel("Epsilon", fontsize=20)
     ax.set_ylabel("Attack Success Rate (ASR)", fontsize=20)
@@ -140,16 +136,23 @@ def plot_two_curves(eps1, asr1, label1, eps2, asr2, label2, norm, title, filenam
     ax.legend(loc="lower right", fontsize=20)
     ax.grid(True, linewidth=0.5, linestyle="--", alpha=0.7)
     ax.set_ylim(-0.05, 1.05)
-    if norm == "linf":
-        if 'ticks' in locals() and ticks:
-            ax.set_xlim(ticks[0], ticks[-1])
-        else:
-            ax.set_xlim(left=0)
+
+    # Apply provided x-limits if given; otherwise set based on ticks
+    if x_xlim is not None:
+        ax.set_xlim(x_xlim[0], x_xlim[1])
     else:
-        if 'ticks' in locals() and ticks:
-            ax.set_xlim(ticks[0], ticks[-1])
+        if norm == "linf":
+            ticks = ax.get_xticks()
+            if isinstance(ticks, (list, np.ndarray)) and len(ticks) > 0:
+                ax.set_xlim(ticks[0], ticks[-1])
+            else:
+                ax.set_xlim(left=0)
         else:
-            ax.set_xlim(left=0)
+            ticks = ax.get_xticks()
+            if isinstance(ticks, (list, np.ndarray)) and len(ticks) > 0:
+                ax.set_xlim(ticks[0], ticks[-1])
+            else:
+                ax.set_xlim(left=0)
     ax.tick_params(axis='both', which='major', labelsize=16)
     plt.savefig(filename)
     plt.close(fig)
@@ -408,8 +411,31 @@ def run_analysis_mode(csv_path, output_dir):
             f.write(table_str + "\n\n")
     print(f"Saved both tables to: {txt_filename}")
 
-    # Generate plots from curves
+    # Generate consistent ticks/ranges per norm across both (untargeted/targeted) plots
     print("\n--- Generating ASR vs. Epsilon Plots (from CSV) ---")
+    shared_axis = {}
+    for norm in ["linf", "l2"]:
+        eps_all = []
+        for targeted in [False, True]:
+            for loss_fn in ["ce", "cw"]:
+                e, _ = curves.get((targeted, norm, loss_fn), ([], []))
+                eps_all.extend(list(e))
+        if norm == "linf":
+            max_eps = float(max(eps_all)) if len(eps_all) > 0 else float(BASE_EPS_LINF_GRID[-1])
+            n_end = int(np.ceil(max_eps * 255))
+            ticks = [n / 255.0 for n in range(0, n_end + 1)]
+            labels = ["0" if n == 0 else f"{n}/255" for n in range(0, n_end + 1)]
+            xlim = (ticks[0], ticks[-1]) if len(ticks) > 0 else (0.0, max_eps)
+        else:
+            ticks = sorted({float(x) for x in eps_all}) if len(eps_all) > 0 else list(map(float, BASE_EPS_L2_GRID))
+            labels = []
+            for t in ticks:
+                s = f"{t:.3f}"
+                s = s.rstrip('0').rstrip('.') if '.' in s else s
+                labels.append(s)
+            xlim = (ticks[0], ticks[-1]) if len(ticks) > 0 else (0.0, float(BASE_EPS_L2_GRID[-1]))
+        shared_axis[norm] = (ticks, labels, xlim)
+
     for targeted, norm in [(False, "linf"), (False, "l2"), (True, "linf"), (True, "l2")]:
         key_ce = (targeted, norm, "ce")
         key_cw = (targeted, norm, "cw")
@@ -422,7 +448,8 @@ def run_analysis_mode(csv_path, output_dir):
         title = f"Success Rate vs. Epsilon ({tlabel}, {norm_label})"
         filename = os.path.join(output_dir, f"asr_{tlabel.lower()}_{norm}.png")
 
-        plot_two_curves(ce_eps, ce_asr, "Cross-Entropy (CE)", cw_eps, cw_asr, "Carlini-Wagner (CW)", norm, title, filename)
+        ticks, labels, xlim = shared_axis[norm]
+        plot_two_curves(ce_eps, ce_asr, "Cross-Entropy (CE)", cw_eps, cw_asr, "Carlini-Wagner (CW)", norm, title, filename, x_ticks=ticks, x_ticklabels=labels, x_xlim=xlim)
 
     print("\nAnalysis complete. Plots and tables generated from CSV.")
 
@@ -524,6 +551,30 @@ def run_experiment_mode(args, output_dir, csv_path):
             nstr = "L-inf" if norm == "linf" else "L2"
             print(f"{tstr}, {nstr}, {loss_fn.upper()}: {n} epsilon points")
 
+    # Build shared x-axis ticks/ranges for each norm using all curves of that norm
+    shared_axis = {}
+    for norm in ["linf", "l2"]:
+        eps_all = []
+        for targeted in [False, True]:
+            for loss_fn in ["ce", "cw"]:
+                e, _ = curves.get((targeted, norm, loss_fn), ([], []))
+                eps_all.extend(list(e))
+        if norm == "linf":
+            max_eps = float(max(eps_all)) if len(eps_all) > 0 else float(BASE_EPS_LINF_GRID[-1])
+            n_end = int(np.ceil(max_eps * 255))
+            ticks = [n / 255.0 for n in range(0, n_end + 1)]
+            labels = ["0" if n == 0 else f"{n}/255" for n in range(0, n_end + 1)]
+            xlim = (ticks[0], ticks[-1]) if len(ticks) > 0 else (0.0, max_eps)
+        else:
+            ticks = sorted({float(x) for x in eps_all}) if len(eps_all) > 0 else list(map(float, BASE_EPS_L2_GRID))
+            labels = []
+            for t in ticks:
+                s = f"{t:.3f}"
+                s = s.rstrip('0').rstrip('.') if '.' in s else s
+                labels.append(s)
+            xlim = (ticks[0], ticks[-1]) if len(ticks) > 0 else (0.0, float(BASE_EPS_L2_GRID[-1]))
+        shared_axis[norm] = (ticks, labels, xlim)
+
     # Plots
     print("\n--- Generating ASR vs. Epsilon Plots ---")
     for (targeted, norm), _ in { (False, "linf"): None, (False, "l2"): None, (True, "linf"): None, (True, "l2"): None }.items():
@@ -535,7 +586,8 @@ def run_experiment_mode(args, output_dir, csv_path):
         title = f"Success Rate vs. Epsilon ({tlabel}, {norm_label})"
         filename = os.path.join(output_dir, f"asr_{tlabel.lower()}_{norm}.png")
 
-        plot_two_curves(ce_eps, ce_asr, "Cross-Entropy (CE)", cw_eps, cw_asr, "Carlini-Wagner (CW)", norm, title, filename)
+        ticks, labels, xlim = shared_axis[norm]
+        plot_two_curves(ce_eps, ce_asr, "Cross-Entropy (CE)", cw_eps, cw_asr, "Carlini-Wagner (CW)", norm, title, filename, x_ticks=ticks, x_ticklabels=labels, x_xlim=xlim)
 
     # Example image
     print("\n--- Generating Example Attacked Image ---")
