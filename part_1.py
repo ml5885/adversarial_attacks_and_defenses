@@ -25,10 +25,9 @@ NUM_IMAGES = 100
 BATCH_SIZE = 10
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_CLASSES = 1000
-PGD_STEPS = 40
 
-BASE_EPS_LINF_GRID = np.linspace(0, 8 / 255, 18)  # {0, 1/255, ..., 8/255}
-BASE_EPS_L2_GRID = np.linspace(0, 3.0, 18) # equally spaced in [0, 3.0]
+BASE_EPS_LINF_GRID = np.linspace(0, 8 / 255, 9)  # {0, 1/255, ..., 8/255}
+BASE_EPS_L2_GRID = np.linspace(0, 3.0, 9) # equally spaced in [0, 3.0]
 
 plt.rcParams.update({'font.family': 'serif'})
 
@@ -120,10 +119,10 @@ def plot_two_curves(eps1, asr1, label1, eps2, asr2, label2, norm, title, filenam
                 if abs(t) < 1e-12:
                     labels.append("0")
                 else:
-                    n = int(round(t * 510))
-                    # Fallback to decimal if not close to a multiple of 1/510
-                    if abs(t * 510 - n) < 1e-6:
-                        labels.append(f"{n}/510")
+                    n = int(round(t * 255))
+                    # Fallback to decimal if not close to a multiple of 1/255
+                    if abs(t * 255 - n) < 1e-6:
+                        labels.append(f"{n}/255")
                     else:
                         labels.append(f"{t:.6f}")
         else:  # l2
@@ -181,6 +180,30 @@ def plot_example_image(clean_img, adv_img, clean_label_str, adv_label_str, title
     plt.close(fig)
     print(f"Saved example image: {filename}")
 
+def estimate_epsilon_for_target_asr(eps_list, asr_list, target=0.5):
+    if eps_list is None or asr_list is None:
+        return np.inf
+    if len(eps_list) == 0 or len(asr_list) == 0:
+        return np.inf
+    eps = np.asarray(eps_list, dtype=float)
+    asr = np.asarray(asr_list, dtype=float)
+
+    order = np.argsort(eps)
+    eps = eps[order]
+    asr = asr[order]
+    
+    # Find first index where ASR >= target
+    mask = asr >= target
+    j = int(np.argmax(mask))
+    if j == 0:
+        return float(eps[0])
+    e0, e1 = eps[j - 1], eps[j]
+    a0, a1 = asr[j - 1], asr[j]
+    if a1 <= a0 + 1e-12:
+        return float(e1)
+    t = (target - a0) / (a1 - a0)
+    return float(e0 + t * (e1 - e0))
+
 
 def _extend_grid_until_full_success(base_grid, norm_name, last_eps):
     """Given the fixed base grid and the last tried epsilon, return the next epsilon to try
@@ -216,7 +239,7 @@ def compute_asr_for_epsilon(args, model, loader, epsilon, norm, loss_fn, targete
             loss_fn=loss_fn,
             targeted=targeted,
             target_labels=target_labels if targeted else None,
-            num_steps=PGD_STEPS,
+            num_steps=args.pgd_steps,
             step_size=epsilon / 4.0,
             kappa=(args.kappa if loss_fn == "cw" else 0.0),
             device=device,
@@ -340,7 +363,7 @@ def run_analysis_mode(csv_path, output_dir):
     curves, eps_stars, n_eps_meta = utils.load_results_from_csv(csv_path)
     labels_map = get_imagenet_labels()
 
-    # Build tables from eps_stars
+    # Build tables from curves by estimating epsilon at 50% ASR
     median_eps_star = {
         "untargeted": {"linf": {}, "l2": {}},
         "targeted": {"linf": {}, "l2": {}},
@@ -350,8 +373,8 @@ def run_analysis_mode(csv_path, output_dir):
         for norm in ["linf", "l2"]:
             for loss_fn in ["ce", "cw"]:
                 key = (targeted, norm, loss_fn)
-                stars = eps_stars.get(key, [])
-                median_eps = np.median(stars) if len(stars) > 0 else np.inf
+                eps_curve, asr_curve = curves.get(key, ([], []))
+                median_eps = estimate_epsilon_for_target_asr(eps_curve, asr_curve, target=0.5) if (len(eps_curve) > 0 and len(asr_curve) > 0) else np.inf
                 if targeted:
                     median_eps_star["targeted"][norm][loss_fn] = median_eps
                 else:
@@ -441,8 +464,8 @@ def run_experiment_mode(args, output_dir, csv_path):
             curves[(targeted, norm, loss_fn)] = (eps_grid, asr_list)
             eps_point_counts[(targeted, norm, loss_fn)] = n_eps
 
-            # For tables (median epsilon*)
-            median_eps = np.median(eps_star_list) if eps_star_list else np.inf
+            # For tables: estimate epsilon where ASR reaches 50%
+            median_eps = estimate_epsilon_for_target_asr(eps_grid, asr_list, target=0.5)
             if targeted:
                 median_eps_star["targeted"][norm][loss_fn] = median_eps
             else:
@@ -554,8 +577,10 @@ def main():
     parser.add_argument("--analysis", action="store_true", help="Skip experiments and load results from CSV to generate plots and tables.")
     parser.add_argument("--csv", type=str, default=None, help="Path to the CSV file to save/load results. Defaults to <output_dir>/results.csv.")
     parser.add_argument("--ckpt", type=str, default="models/resnet18_l2_eps0.ckpt", help="Path to the ResNet-18 checkpoint file.")
-    parser.add_argument("--kappa", type=float, default=0.0, help="Confidence parameter for CW loss (default 0.0).")
     parser.add_argument("--output_dir", type=str, default="results/part_1", help="Directory to write outputs (plots, tables, CSV).")
+    parser.add_argument("--kappa", type=float, default=0.0, help="Confidence parameter for CW loss (default 0.0).")
+    parser.add_argument("--pgd_steps", type=int, default=40, help="Number of PGD steps (default 40).")
+
     args = parser.parse_args()
 
     out_dir = args.output_dir
