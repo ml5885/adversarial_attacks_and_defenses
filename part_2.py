@@ -32,7 +32,7 @@ def run_experiment(max_steps, log_every):
     # Prepare data
     train_loader, test_loader = train.get_data_loaders(batch_size=50, download=True)
     # Evaluate on a fixed set of epsilon values
-    eval_eps = [0.0, 0.1, 0.2, 0.3]
+    eval_eps = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
     results: Dict[str, Dict[float, float]] = {}
 

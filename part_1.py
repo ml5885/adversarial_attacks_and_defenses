@@ -427,13 +427,14 @@ def run_analysis_mode(csv_path, output_dir):
             labels = ["0" if n == 0 else f"{n}/255" for n in range(0, n_end + 1)]
             xlim = (ticks[0], ticks[-1]) if len(ticks) > 0 else (0.0, max_eps)
         else:
-            ticks = sorted({float(x) for x in eps_all}) if len(eps_all) > 0 else list(map(float, BASE_EPS_L2_GRID))
+            max_tick = float(max(eps_all)) if len(eps_all) > 0 else float(BASE_EPS_L2_GRID[-1])
+            ticks = np.arange(0, max_tick + 0.2, 0.2).tolist()
             labels = []
             for t in ticks:
-                s = f"{t:.3f}"
+                s = f"{t:.1f}" if abs(t - round(t, 1)) < 1e-8 else f"{t:.2f}"
                 s = s.rstrip('0').rstrip('.') if '.' in s else s
                 labels.append(s)
-            xlim = (ticks[0], ticks[-1]) if len(ticks) > 0 else (0.0, float(BASE_EPS_L2_GRID[-1]))
+            xlim = (0.0, ticks[-1]) if len(ticks) > 0 else (0.0, float(BASE_EPS_L2_GRID[-1]))
         shared_axis[norm] = (ticks, labels, xlim)
 
     for targeted, norm in [(False, "linf"), (False, "l2"), (True, "linf"), (True, "l2")]:
