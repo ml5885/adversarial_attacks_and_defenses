@@ -71,6 +71,7 @@ def get_dataloader(checkpoint_path, num_images):
         label = torch.tensor([item["label"]]).to(DEVICE)
 
         with torch.no_grad():
+            # If the model classifies correctly, use the image
             if model(image).argmax(dim=1).item() == label.item():
                 clean_images.append(image)
                 clean_labels.append(label)
