@@ -145,32 +145,14 @@ class GCGEnsemble:
             candidate_embeds = embedding_layer(sampled_ids)
             
             if self.config.use_prefix_cache:
-                input_embeds = torch.cat(
-                    [
-                        candidate_embeds,
-                        context["after_embeds"].repeat(num_candidates, 1, 1),
-                        context["target_embeds"].repeat(num_candidates, 1, 1),
-                    ],
-                    dim=1,
-                )
-
-                with torch.no_grad():
-                    before_batched = context["before_embeds"].repeat(num_candidates, 1, 1)
-                    cache_out = model(inputs_embeds=before_batched, use_cache=True)
-                    prefix_cache_batch = cache_out.past_key_values
-
+                input_embeds = torch.cat([candidate_embeds, context["after_embeds"].repeat(num_candidates, 1, 1), context["target_embeds"].repeat(num_candidates, 1, 1)], dim=1)
+                
+                prefix_cache_batch = [[pc.expand(num_candidates, -1, -1, -1) for pc in layer_cache] for layer_cache in context["prefix_cache"]]
                 outputs = model(inputs_embeds=input_embeds, past_key_values=prefix_cache_batch)
             else:
-                input_embeds = torch.cat(
-                    [
-                        context["before_embeds"].repeat(num_candidates, 1, 1),
-                        candidate_embeds,
-                        context["after_embeds"].repeat(num_candidates, 1, 1),
-                        context["target_embeds"].repeat(num_candidates, 1, 1),
-                    ],
-                    dim=1,
-                )
+                input_embeds = torch.cat([context["before_embeds"].repeat(num_candidates, 1, 1), candidate_embeds, context["after_embeds"].repeat(num_candidates, 1, 1), context["target_embeds"].repeat(num_candidates, 1, 1)], dim=1)
                 outputs = model(inputs_embeds=input_embeds)
+
             logits = outputs.logits
             target_ids = context["target_ids"]
             shift = input_embeds.shape[1] - target_ids.shape[1]

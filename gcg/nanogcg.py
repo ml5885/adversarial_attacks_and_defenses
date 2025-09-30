@@ -522,22 +522,12 @@ class GCG:
                 current_batch_size = input_embeds_batch.shape[0]
 
                 if self.prefix_cache:
-                    with torch.no_grad():
-                        before_batched = self.before_embeds.repeat(current_batch_size, 1, 1)
-                        cache_out = self.model(
-                            inputs_embeds=before_batched,
-                            use_cache=True
-                        )
-                        prefix_cache_batch = cache_out.past_key_values
+                    if not prefix_cache_batch or current_batch_size != search_batch_size:
+                        prefix_cache_batch = [[x.expand(current_batch_size, -1, -1, -1) for x in self.prefix_cache[i]] for i in range(len(self.prefix_cache))]
 
-                    outputs = self.model(
-                        inputs_embeds=input_embeds_batch,
-                        past_key_values=prefix_cache_batch,
-                        use_cache=True
-                    )
+                    outputs = self.model(inputs_embeds=input_embeds_batch, past_key_values=prefix_cache_batch, use_cache=True)
                 else:
                     outputs = self.model(inputs_embeds=input_embeds_batch)
-
 
                 logits = outputs.logits
 
@@ -610,18 +600,21 @@ class GCG:
                     draft_sampled_ids_batch = draft_sampled_ids[i : i + batch_size]
 
                     if self.draft_prefix_cache:
-                        with torch.no_grad():
-                            draft_before_batched = self.draft_before_embeds.repeat(batch_size, 1, 1)
-                            draft_cache_out = self.draft_model(
-                                inputs_embeds=draft_before_batched,
-                                use_cache=True
-                            )
-                            draft_prefix_cache_batch = draft_cache_out.past_key_values
-
-                        draft_embeds = torch.cat([...], dim=1)
+                        if not draft_prefix_cache_batch or batch_size != search_batch_size:
+                            draft_prefix_cache_batch = [
+                                [x.expand(batch_size, -1, -1, -1) for x in self.draft_prefix_cache[i]] for i in range(len(self.draft_prefix_cache))
+                            ]
+                        draft_embeds = torch.cat(
+                            [
+                                self.draft_embedding_layer(draft_sampled_ids_batch),
+                                self.draft_after_embeds.repeat(batch_size, 1, 1),
+                                self.draft_target_embeds.repeat(batch_size, 1, 1),
+                            ],
+                            dim=1,
+                        )
                         draft_output = self.draft_model(
                             inputs_embeds=draft_embeds,
-                            past_key_values=draft_prefix_cache_batch
+                            past_key_values=draft_prefix_cache_batch,
                         )
                     else:
                         draft_embeds = torch.cat(

@@ -124,8 +124,13 @@ def run_task_1(args):
     if tokenizer.pad_token_id is None: tokenizer.pad_token_id = tokenizer.eos_token_id
 
     config = GCGConfig(
-        num_steps=args.num_steps, search_width=args.search_width, topk=args.topk,
-        seed=args.seed, verbosity=args.verbosity, optim_str_init="! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !"
+        num_steps=args.num_steps,
+        search_width=args.search_width,
+        topk=args.topk,
+        seed=args.seed,
+        verbosity=args.verbosity,
+        optim_str_init="! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !",
+        use_prefix_cache=False,
     )
     
     result = nanogcg.run(model, tokenizer, message, target, config)
@@ -197,8 +202,13 @@ def run_task_2b(args):
     print(f"Running on {len(behaviors_to_run)} behaviors.")
 
     config = GCGConfig(
-        num_steps=args.num_steps, search_width=args.search_width, topk=args.topk, seed=args.seed,
-        verbosity=args.verbosity, optim_str_init="! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !"
+        num_steps=args.num_steps,
+        search_width=args.search_width,
+        topk=args.topk,
+        seed=args.seed,
+        verbosity=args.verbosity,
+        use_prefix_cache=False,
+        optim_str_init="! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !",
     )
 
     final_success_counts = {mid: 0 for mid in all_model_ids}
