@@ -9,7 +9,6 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-import gcg.gcg as ensemble_gcg
 import gcg.nanogcg as nanogcg
 from gcg.nanogcg import GCGConfig
 
@@ -17,7 +16,7 @@ plt.rcParams.update({'font.family': 'serif', 'font.size': 14})
 OUTPUT_DIR = "results/part_3/"
 BEHAVIORS_FILE = "behaviors.json"
 
-MODEL_DISPLATY_NAME = {
+MODEL_DISPLAY_NAME = {
     "mistralai/Mistral-7B-Instruct-v0.2": "Mistral 7B Instruct v0.2",
     "meta-llama/Llama-3.2-1B-Instruct": "LLaMA 3.2 1B Instruct",
 }
@@ -31,18 +30,20 @@ def is_successful(response, target):
 
 def plot_losses(steps, losses, success_step=None, title="Loss Curve", xlabel="Step", ylabel="Loss", save_path="loss_curve.png"):
     plt.figure(figsize=(8, 5))
-    plt.plot(steps, losses, label='Loss', color='blue')
-    if success_step is not None:
-        plt.axvline(x=success_step, color='r', linestyle='--', label=f'Success at Step {success_step}')
-        print(f"Marking success at step: {success_step}")
-
+    plt.plot(steps, losses, label='Loss')
+    if success_step is not None and success_step in steps:
+        idx = steps.index(success_step)
+        plt.scatter([steps[idx]], [losses[idx]], marker='*', s=240, edgecolors='k', zorder=3,
+                    label=f'First non-refusal @ {success_step}')
     plt.title(title)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.legend()
     plt.grid(True)
+    plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
+
 
 def plot_asr_vs_iterations(asr_data, model_names, title, save_path):
     plt.figure(figsize=(10, 6))
@@ -121,7 +122,8 @@ def run_task_1(args):
 
     model = AutoModelForCausalLM.from_pretrained(args.model_ids[0], torch_dtype=dtype).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained(args.model_ids[0])
-    if tokenizer.pad_token_id is None: tokenizer.pad_token_id = tokenizer.eos_token_id
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
 
     config = GCGConfig(
         num_steps=args.num_steps,
@@ -129,32 +131,47 @@ def run_task_1(args):
         topk=args.topk,
         seed=args.seed,
         verbosity=args.verbosity,
-        optim_str_init="! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !",
-        use_prefix_cache=False,
+        optim_str_init="x x x x x x x x x x x x x x x x x x x x",
     )
     
     result = nanogcg.run(model, tokenizer, message, target, config)
 
     first_success_step = None
-    logged_steps = []
-    logged_losses = []
+    logged_steps, logged_losses, logged_success = [], [], []
+
     for i, suffix in enumerate(result.strings):
         iteration_step = i + 1
         if iteration_step % 20 == 0:
             logged_steps.append(iteration_step)
             logged_losses.append(result.losses[i])
-            
+
+            success = False
             if first_success_step is None:
                 response = generate(model, tokenizer, device, f"{message}{suffix}")
-                if is_successful(response, target):
+                success = is_successful(response, target)
+                if success:
                     first_success_step = iteration_step
                     print(f"Success first detected at step: {first_success_step}")
-    
-    plot_path = os.path.join(output_dir, f"task1_loss_curve.png")
-    plot_losses(logged_steps, logged_losses, success_step=first_success_step, save_path=plot_path, title=f"Task 1 Loss Curve ({args.model_ids[0]})")
+            logged_success.append(1 if success and iteration_step == first_success_step else 0)
+
+    csv_path = os.path.join(output_dir, "task1_loss_log.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["iteration", "loss", "first_non_refusal_here"])
+        for s, l, ok in zip(logged_steps, logged_losses, logged_success):
+            writer.writerow([s, l, ok])
+    print(f"Saved checkpoint log to {csv_path}")
+
+    plot_path = os.path.join(output_dir, "task1_loss_curve.png")
+    plot_losses(
+        logged_steps,
+        logged_losses,
+        success_step=first_success_step,
+        save_path=plot_path,
+        title=f"Task 1 Loss Curve ({args.model_ids[0]})"
+    )
     print(f"Saved loss plot to {plot_path}")
 
-    # Save final results
     final_suffix = result.best_string
     final_response = generate(model, tokenizer, device, f"{message}{final_suffix}")
 
@@ -174,94 +191,7 @@ def run_task_1(args):
 
 def run_task_2b(args):
     print("--- Running Task 2B: Transferability via Model Ensembling ---")
-    ensemble_models_ids = args.model_ids
-    transfer_model_id = args.transfer_model_id
-    all_model_ids = ensemble_models_ids + [transfer_model_id]
-    
-    output_dir = os.path.join(args.output_dir, "task2b")
-    ensure_dir(output_dir)
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if device == "cuda" else torch.float32
-
-    # Load models
-    tokenizer = AutoTokenizer.from_pretrained(ensemble_models_ids[0])
-    if tokenizer.pad_token_id is None: tokenizer.pad_token_id = tokenizer.eos_token_id
-    
-    print(f"Loading ensemble models: {ensemble_models_ids}")
-    ensemble_models = [AutoModelForCausalLM.from_pretrained(mid, torch_dtype=dtype).to(device).eval() for mid in ensemble_models_ids]
-    print(f"Loading transfer model: {transfer_model_id}")
-    transfer_model = AutoModelForCausalLM.from_pretrained(transfer_model_id, torch_dtype=dtype).to(device).eval()
-    all_models = ensemble_models + [transfer_model]
-
-    # Load behaviors from JSON
-    with open(BEHAVIORS_FILE, "r") as f:
-        behaviors = json.load(f)
-    
-    behaviors_to_run = behaviors[:10]
-    print(f"Running on {len(behaviors_to_run)} behaviors.")
-
-    config = GCGConfig(
-        num_steps=args.num_steps,
-        search_width=args.search_width,
-        topk=args.topk,
-        seed=args.seed,
-        verbosity=args.verbosity,
-        use_prefix_cache=False,
-        optim_str_init="! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !",
-    )
-
-    final_success_counts = {mid: 0 for mid in all_model_ids}
-    all_behaviors_asr_data = []
-
-    for i, behavior_obj in enumerate(behaviors_to_run):
-        behavior = behavior_obj["behavior"]
-        target = behavior_obj["target_prefix"]
-        print(f"\n--- Running Behavior {i+1}/{len(behaviors_to_run)}: {behavior} ---")
-        
-        result = ensemble_gcg.run(ensemble_models, tokenizer, behavior, target, config)
-
-        asr_vs_iter = {}
-        for step_idx, suffix in enumerate(result.strings):
-            if (step_idx + 1) % 20 == 0:
-                successes = []
-                for model in all_models:
-                    response = generate(model, tokenizer, device, f"{behavior}{suffix}")
-                    successes.append(1 if is_successful(response, target) else 0)
-                asr_vs_iter[step_idx] = successes
-        all_behaviors_asr_data.append(asr_vs_iter)
-
-        final_suffix = result.best_string
-        for j, model_id in enumerate(all_model_ids):
-            response = generate(all_models[j], tokenizer, device, f"{behavior}{final_suffix}")
-            if is_successful(response, target):
-                final_success_counts[model_id] += 1
-
-    # Aggregate and plot results
-    num_behaviors = len(behaviors_to_run)
-    steps = sorted(all_behaviors_asr_data[0].keys()) if all_behaviors_asr_data else []
-    
-    # 1. ASR vs Iterations Plot (Line)
-    if steps:
-        avg_asr_data = {}
-        for step in steps:
-            avg_successes = np.zeros(len(all_models))
-            for behavior_data in all_behaviors_asr_data:
-                if step in behavior_data:
-                    avg_successes += np.array(behavior_data[step])
-            avg_asr_data[step] = (avg_successes / num_behaviors).tolist()
-        
-        plot_asr_vs_iterations(avg_asr_data, all_model_ids, "ASR vs. Iterations", os.path.join(output_dir, "task2b_asr_vs_iterations.png"))
-        print("Saved ASR vs. Iterations plot.")
-
-    # 2. Final ASR Plot (Bar)
-    final_asr = {mid: count / num_behaviors for mid, count in final_success_counts.items()}
-    print(f"Final ASRs: {final_asr}")
-    plot_asr_bar_chart(final_asr, all_model_ids, "Final Attack Success Rate (ASR)", os.path.join(output_dir, "task2b_final_asr.png"))
-    print("Saved Final ASR bar chart.")
-
-    transfer_rate = final_asr[transfer_model_id]
-    print(f"\n>>> Final Transfer Rate to {transfer_model_id}: {transfer_rate:.2f}")
+    pass
 
 def main():
     parser = argparse.ArgumentParser(description="Part 3: Attacking Aligned LMs")
@@ -288,11 +218,7 @@ def main():
             parser.error("Task 1 requires exactly one model specified with --model-ids.")
         run_task_1(args)
     elif args.task == 'task2b':
-        if len(args.model_ids) != 2:
-            parser.error("Task 2B requires exactly two ensemble models specified with --model-ids.")
-        if not args.transfer_model_id:
-            parser.error("Task 2B requires a --transfer-model-id.")
-        run_task_2b(args)
+        pass
 
 if __name__ == "__main__":
     main()
