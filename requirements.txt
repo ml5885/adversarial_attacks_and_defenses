@@ -9,3 +9,4 @@ pillow
 tqdm
 tabulate
 nanogcg
+scipy
