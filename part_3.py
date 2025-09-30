@@ -152,7 +152,13 @@ def run_task_1(args):
     # Save final results
     final_suffix = result.best_string
     final_response = generate(model, tokenizer, device, f"{message}{final_suffix}")
-    
+
+    print(f"Model: {args.model_ids[0]}")
+    print(f"Behavior: {message}")
+    print(f"Target: {target}")
+    print(f"--- Final Suffix ---\n{final_suffix}")
+    print(f"--- Final Model Output ---\n{final_response}")
+
     with open(os.path.join(output_dir, "task1_results.txt"), "w") as f:
         f.write(f"Model: {args.model_ids[0]}\n")
         f.write(f"Behavior: {message}\n")
@@ -255,7 +261,7 @@ def main():
     parser.add_argument("--model-ids", nargs='+', default=["mistralai/Mistral-7B-Instruct-v0.2"], help="For task1, one model. For task2b, two ensemble models.")
     parser.add_argument("--transfer-model-id", type=str, default="meta-llama/Llama-3.2-3B-Instruct", help="Held-out model for task2b transfer.")
 
-    parser.add_argument("--num-steps", type=int, default=100)
+    parser.add_argument("--num-steps", type=int, default=500)
     parser.add_argument("--search-width", type=int, default=512)
     parser.add_argument("--topk", type=int, default=256)
     parser.add_argument("--seed", type=int, default=42)
