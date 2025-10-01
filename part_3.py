@@ -38,7 +38,6 @@ def plot_losses(steps, losses, success_step=None, title="Loss Curve", xlabel="St
     plt.title(title)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
-    plt.legend()
     plt.grid(True)
     plt.tight_layout()
     plt.savefig(save_path)
@@ -89,7 +88,7 @@ def plot_asr_bar_chart(final_asr, model_names, title, save_path):
     plt.savefig(save_path)
     plt.close()
 
-def generate(model, tokenizer, device, text, max_new_tokens=100):
+def generate(model, tokenizer, device, text, max_new_tokens=512):
     messages = [{"role": "user", "content": text}]
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
@@ -125,6 +124,9 @@ def run_task_1(args):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
+    default_response = generate(model, tokenizer, device, message)
+    print(f"--- Default Model Output (no suffix) ---\n{default_response}")
+
     config = GCGConfig(
         num_steps=args.num_steps,
         search_width=args.search_width,
@@ -141,7 +143,7 @@ def run_task_1(args):
 
     for i, suffix in enumerate(result.strings):
         iteration_step = i + 1
-        if iteration_step % 20 == 0:
+        if iteration_step == 1 or iteration_step % 20 == 0:
             logged_steps.append(iteration_step)
             logged_losses.append(result.losses[i])
 
@@ -185,6 +187,7 @@ def run_task_1(args):
         f.write(f"Model: {args.model_ids[0]}\n")
         f.write(f"Behavior: {message}\n")
         f.write(f"Target: {target}\n\n")
+        f.write(f"--- Default Model Output (no suffix) ---\n{default_response}\n\n")
         f.write(f"--- Final Suffix ---\n{final_suffix}\n\n")
         f.write(f"--- Final Model Output ---\n{final_response}\n")
     print("Saved final suffix and model output.")
