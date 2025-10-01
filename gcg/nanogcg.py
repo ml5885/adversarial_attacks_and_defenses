@@ -754,3 +754,322 @@ def run(
     gcg = GCG(model, tokenizer, config)
     result = gcg.run(messages, target)
     return result
+
+
+class GCGMulti:
+    """
+    GCG optimizer that shares a single optimized suffix across multiple behaviors.
+    At each step it:
+      1) builds a loss for each behavior (same suffix),
+      2) averages losses to form a single objective,
+      3) takes a gradient wrt the shared token one-hot,
+      4) samples candidates from that gradient and selects by mean loss.
+    """
+    def __init__(
+        self,
+        model: transformers.PreTrainedModel,
+        tokenizer: transformers.PreTrainedTokenizer,
+        messages_list: List[Union[str, List[dict]]],
+        targets_list: List[str],
+        config: GCGConfig,
+    ):
+        assert len(messages_list) == len(targets_list) and len(messages_list) > 0, \
+            "messages_list and targets_list must be same nonzero length"
+        self.model = model
+        self.tokenizer = tokenizer
+        self.config = config
+
+        self.embedding_layer = model.get_input_embeddings()
+        self.not_allowed_ids = None if config.allow_non_ascii else get_nonascii_toks(tokenizer, device=model.device)
+
+        if not tokenizer.chat_template:
+            logger.warning("Tokenizer does not have a chat template. Assuming base model and setting chat template to empty.")
+            tokenizer.chat_template = "{% for message in messages %}{{ message['content'] }}{% endfor %}"
+
+        # Prepare per-behavior cached pieces (before/after/target embeds & prefix caches)
+        self.beh_before_embeds = []
+        self.beh_after_embeds = []
+        self.beh_target_embeds = []
+        self.beh_target_ids = []
+        self.beh_prefix_cache = []
+
+        for messages, target in zip(messages_list, targets_list):
+            if isinstance(messages, str):
+                messages = [{"role": "user", "content": messages}]
+            else:
+                messages = copy.deepcopy(messages)
+
+            if not any("{optim_str}" in d["content"] for d in messages):
+                messages[-1]["content"] = messages[-1]["content"] + "{optim_str}"
+
+            template = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            if tokenizer.bos_token and template.startswith(tokenizer.bos_token):
+                template = template.replace(tokenizer.bos_token, "")
+            before_str, after_str = template.split("{optim_str}")
+
+            target = " " + target if config.add_space_before_target else target
+
+            # tokenize
+            before_ids = tokenizer([before_str], padding=False, return_tensors="pt")["input_ids"].to(model.device, torch.int64)
+            after_ids = tokenizer([after_str], add_special_tokens=False, return_tensors="pt")["input_ids"].to(model.device, torch.int64)
+            target_ids = tokenizer([target], add_special_tokens=False, return_tensors="pt")["input_ids"].to(model.device, torch.int64)
+
+            # embed
+            before_embeds = self.embedding_layer(before_ids)
+            after_embeds = self.embedding_layer(after_ids)
+            target_embeds = self.embedding_layer(target_ids)
+
+            # prefix cache
+            pfx = None
+            if config.use_prefix_cache:
+                with torch.no_grad():
+                    out = model(inputs_embeds=before_embeds, use_cache=True)
+                    pfx = out.past_key_values
+
+            self.beh_before_embeds.append(before_embeds)
+            self.beh_after_embeds.append(after_embeds)
+            self.beh_target_embeds.append(target_embeds)
+            self.beh_target_ids.append(target_ids)
+            self.beh_prefix_cache.append(pfx)
+
+        self.stop_flag = False
+
+    def _expand_past(self, pkv, batch_size: int):
+        if pkv is None:
+            return None
+        # Expand each layer's (k,v) to batch size
+        expanded = []
+        for layer in pkv:
+            expanded.append(tuple(t.expand(batch_size, -1, -1, -1) for t in layer))
+        return expanded
+
+    def _ce_loss_for_behavior_batch(self, input_embeds: Tensor, target_ids: Tensor, past_kv):
+        # Forward & CE per candidate
+        if past_kv is not None:
+            outputs = self.model(inputs_embeds=input_embeds, past_key_values=past_kv, use_cache=True)
+        else:
+            outputs = self.model(inputs_embeds=input_embeds)
+
+        logits = outputs.logits
+        tmp = input_embeds.shape[1] - target_ids.shape[1]  # shift so n-1 predicts n
+        shift_logits = logits[..., tmp - 1 : -1, :].contiguous()
+        shift_labels = target_ids.repeat(input_embeds.shape[0], 1)
+
+        if self.config.use_mellowmax:
+            label_logits = torch.gather(shift_logits, -1, shift_labels.unsqueeze(-1)).squeeze(-1)
+            loss = mellowmax(-label_logits, alpha=self.config.mellowmax_alpha, dim=-1)
+            return loss
+        else:
+            loss = torch.nn.functional.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                reduction="none",
+            ).view(input_embeds.shape[0], -1).mean(dim=-1)
+            return loss
+
+    def _compute_candidates_mean_loss(self, sampled_ids: Tensor) -> Tensor:
+        """
+        Returns a vector of shape (num_candidates,) with the mean loss across behaviors.
+        Memory-aware: splits candidates into sub-batches if needed.
+        """
+        B = sampled_ids.shape[0]
+        losses_total = torch.zeros(B, device=self.model.device, dtype=torch.float32)
+        bs = B if self.config.batch_size is None else self.config.batch_size
+
+        # We reuse the *same* candidate token ids for each behavior.
+        for b_idx in range(0, B, bs):
+            end = min(B, b_idx + bs)
+            cand_ids_batch = sampled_ids[b_idx:end]
+            cand_embeds_batch = self.embedding_layer(cand_ids_batch)
+
+            # Accumulate loss across behaviors for this batch
+            batch_loss = torch.zeros(end - b_idx, device=self.model.device, dtype=torch.float32)
+
+            for before_embeds, after_embeds, target_embeds, target_ids, pfx in zip(
+                self.beh_before_embeds, self.beh_after_embeds, self.beh_target_embeds, self.beh_target_ids, self.beh_prefix_cache
+            ):
+                if pfx is not None:
+                    input_embeds = torch.cat(
+                        [cand_embeds_batch, after_embeds.repeat(end - b_idx, 1, 1), target_embeds.repeat(end - b_idx, 1, 1)],
+                        dim=1,
+                    )
+                    past = self._expand_past(pfx, end - b_idx)
+                else:
+                    input_embeds = torch.cat(
+                        [
+                            before_embeds.repeat(end - b_idx, 1, 1),
+                            cand_embeds_batch,
+                            after_embeds.repeat(end - b_idx, 1, 1),
+                            target_embeds.repeat(end - b_idx, 1, 1),
+                        ],
+                        dim=1,
+                    )
+                    past = None
+
+                with torch.no_grad():
+                    loss_vec = self._ce_loss_for_behavior_batch(input_embeds, target_ids, past)
+                batch_loss += loss_vec
+
+            batch_loss /= len(self.beh_target_ids)
+            losses_total[b_idx:end] = batch_loss
+
+            del cand_embeds_batch, input_embeds
+            gc.collect()
+            torch.cuda.empty_cache()
+
+        return losses_total
+
+    def _compute_token_gradient_multi(self, optim_ids: Tensor) -> Tensor:
+        """
+        Compute gradient of mean loss across behaviors w.r.t. the shared one-hot tokens.
+        """
+        vocab = self.embedding_layer.num_embeddings
+        optim_onehot = torch.nn.functional.one_hot(optim_ids, num_classes=vocab).to(self.model.device, self.model.dtype)
+        optim_onehot.requires_grad_()
+
+        optim_embeds = optim_onehot @ self.embedding_layer.weight  # (1, n_tokens, emb_dim)
+
+        total_loss = 0.0
+        for before_embeds, after_embeds, target_embeds, target_ids, pfx in zip(
+            self.beh_before_embeds, self.beh_after_embeds, self.beh_target_embeds, self.beh_target_ids, self.beh_prefix_cache
+        ):
+            if pfx is not None:
+                input_embeds = torch.cat([optim_embeds, after_embeds, target_embeds], dim=1)
+                outputs = self.model(inputs_embeds=input_embeds, past_key_values=pfx, use_cache=True)
+            else:
+                input_embeds = torch.cat([before_embeds, optim_embeds, after_embeds, target_embeds], dim=1)
+                outputs = self.model(inputs_embeds=input_embeds)
+
+            logits = outputs.logits
+            shift = input_embeds.shape[1] - target_ids.shape[1]
+            shift_logits = logits[..., shift - 1 : -1, :].contiguous()
+            shift_labels = target_ids
+
+            if self.config.use_mellowmax:
+                label_logits = torch.gather(shift_logits, -1, shift_labels.unsqueeze(-1)).squeeze(-1)
+                loss = mellowmax(-label_logits, alpha=self.config.mellowmax_alpha, dim=-1)
+            else:
+                loss = torch.nn.functional.cross_entropy(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                )
+
+            total_loss = total_loss + loss
+
+        total_loss = total_loss / len(self.beh_target_ids)
+        grad = torch.autograd.grad(outputs=[total_loss], inputs=[optim_onehot])[0]
+        return grad
+
+    def init_buffer(self) -> AttackBuffer:
+        # same as single-behavior but uses mean loss across behaviors
+        logger.info(f"Initializing attack buffer of size {self.config.buffer_size}...")
+        buffer = AttackBuffer(self.config.buffer_size)
+
+        if isinstance(self.config.optim_str_init, str):
+            init_optim_ids = self.tokenizer(
+                self.config.optim_str_init, add_special_tokens=False, return_tensors="pt"
+            )["input_ids"].to(self.model.device)
+            if self.config.buffer_size > 1:
+                init_buffer_ids = self.tokenizer(INIT_CHARS, add_special_tokens=False, return_tensors="pt")["input_ids"].squeeze().to(self.model.device)
+                init_indices = torch.randint(0, init_buffer_ids.shape[0], (self.config.buffer_size - 1, init_optim_ids.shape[1]))
+                init_buffer_ids = torch.cat([init_optim_ids, init_buffer_ids[init_indices]], dim=0)
+            else:
+                init_buffer_ids = init_optim_ids
+        else:
+            try:
+                init_buffer_ids = self.tokenizer(
+                    self.config.optim_str_init, add_special_tokens=False, return_tensors="pt"
+                )["input_ids"].to(self.model.device)
+            except ValueError:
+                logger.error("Unable to create buffer. Ensure that all initializations tokenize to the same length.")
+
+        true_buffer_size = max(1, self.config.buffer_size)
+        # compute mean loss across behaviors for each init
+        losses = self._compute_candidates_mean_loss(init_buffer_ids)
+        for i in range(true_buffer_size):
+            buffer.add(losses[i].item(), init_buffer_ids[[i]])
+
+        buffer.log_buffer(self.tokenizer)
+        logger.info("Initialized attack buffer.")
+        return buffer
+
+    def run(self) -> GCGResult:
+        if self.config.seed is not None:
+            set_seed(self.config.seed)
+            torch.use_deterministic_algorithms(True, warn_only=True)
+
+        if self.model.dtype in (torch.float32, torch.float64):
+            logger.warning(f"Model is in {self.model.dtype}. Use a lower precision if possible for faster optimization.")
+
+        if self.config.probe_sampling_config is not None:
+            raise NotImplementedError("Probe sampling is not implemented for GCGMulti.")
+
+        buffer = self.init_buffer()
+        optim_ids = buffer.get_best_ids()
+
+        losses = []
+        optim_strings = []
+
+        for _ in tqdm(range(self.config.num_steps)):
+            # 1) gradient of mean loss wrt one-hot tokens
+            token_grad = self._compute_token_gradient_multi(optim_ids)
+
+            with torch.no_grad():
+                # 2) sample candidates from gradient
+                sampled_ids = sample_ids_from_grad(
+                    optim_ids.squeeze(0),
+                    token_grad.squeeze(0),
+                    self.config.search_width,
+                    self.config.topk,
+                    self.config.n_replace,
+                    not_allowed_ids=self.not_allowed_ids,
+                )
+                if self.config.filter_ids:
+                    sampled_ids = filter_ids(sampled_ids, self.tokenizer)
+
+                # 3) mean loss across behaviors for candidates
+                cand_losses = self._compute_candidates_mean_loss(sampled_ids)
+
+                # pick best
+                best_idx = torch.argmin(cand_losses).item()
+                current_loss = cand_losses[best_idx].item()
+                optim_ids = sampled_ids[best_idx].unsqueeze(0)
+
+                losses.append(current_loss)
+                if buffer.size == 0 or current_loss < buffer.get_highest_loss():
+                    buffer.add(current_loss, optim_ids)
+
+            optim_ids = buffer.get_best_ids()
+            optim_str = self.tokenizer.batch_decode(optim_ids)[0]
+            optim_strings.append(optim_str)
+            buffer.log_buffer(self.tokenizer)
+
+            if self.stop_flag:
+                logger.info("Early stopping (perfect match).")
+                break
+
+        min_idx = losses.index(min(losses))
+        return GCGResult(
+            best_loss=losses[min_idx],
+            best_string=optim_strings[min_idx],
+            losses=losses,
+            strings=optim_strings,
+        )
+
+
+def run_multi(
+    model: transformers.PreTrainedModel,
+    tokenizer: transformers.PreTrainedTokenizer,
+    messages_list: List[Union[str, List[dict]]],
+    targets_list: List[str],
+    config: Optional[GCGConfig] = None,
+) -> GCGResult:
+    """
+    Multi-behavior wrapper: learns ONE suffix by optimizing the mean loss
+    over (messages_i, target_i) pairs.
+    """
+    if config is None:
+        config = GCGConfig()
+    logger.setLevel(getattr(logging, config.verbosity))
+    gcg = GCGMulti(model, tokenizer, messages_list, targets_list, config)
+    return gcg.run()

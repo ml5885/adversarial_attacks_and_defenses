@@ -222,7 +222,7 @@ def run_task_1(args):
 
 def run_task_2(args):
     if args.analysis:
-        # load results from csv for plotting
+        # Load & plot previously logged ASR
         output_dir = os.path.join(args.output_dir, "task2")
         csv_path = os.path.join(output_dir, "task2_asr_log.csv")
         if not os.path.exists(csv_path):
@@ -237,12 +237,13 @@ def run_task_2(args):
                 logged_asr_test.append(float(row["asr_test"]))
         print(f"Loaded logged data from '{csv_path}' for analysis.")
     else:
-        print("--- Running Task 2: Universality via Behavior Ensembling ---")
+        print("--- Running Task 2A: Universality via Behavior Ensembling (ONE shared suffix) ---")
         with open(BEHAVIORS_FILE, "r") as f:
             behaviors = json.load(f)
-        
-        val_behaviors = behaviors[:10]  # Use first 10 as validation set
-        
+        train_behaviors = behaviors[:10]
+        train_messages = [b["behavior"] for b in train_behaviors]
+        train_targets = [b.get("target_prefix", "Sure") for b in train_behaviors]
+
         output_dir = os.path.join(args.output_dir, "task2")
         ensure_dir(output_dir)
 
@@ -253,24 +254,25 @@ def run_task_2(args):
         tokenizer = AutoTokenizer.from_pretrained(args.model_id)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
-        
-        # Load test behaviors from HarmBench test set, filtering those refused by default
+
+        # Build 10 held-out test prompts from HarmBench test set that the model refuses by default
         url = "https://raw.githubusercontent.com/centerforaisafety/HarmBench/main/data/behavior_datasets/harmbench_behaviors_text_test.csv"
-        response = requests.get(url)
-        response.raise_for_status()
-        content = response.text
-        reader = csv.DictReader(content.splitlines())
-        test_behaviors = []
+        resp = requests.get(url)
+        resp.raise_for_status()
+        reader = csv.DictReader(resp.text.splitlines())
+        test_messages = []
         for row in reader:
-            if "context" not in row.get("Tags", ""):
-                test_msg = row["Behavior"]
-                # Check if model refuses by default
-                default_response = generate(model, tokenizer, device, test_msg)
-                if not is_non_refusal(default_response):
-                    test_behaviors.append(test_msg)
-                    if len(test_behaviors) == 10:
-                        break
-        
+            if "context" in row.get("Tags", ""):
+                continue
+            msg = row["Behavior"]
+            baseline = generate(model, tokenizer, device, msg)
+            if not is_non_refusal(baseline):
+                test_messages.append(msg)
+                if len(test_messages) == 10:
+                    break
+        if len(test_messages) < 10:
+            print(f"Warning: only found {len(test_messages)} default-refusal test prompts; continuing with fewer.")
+
         config = GCGConfig(
             num_steps=args.num_steps,
             search_width=args.search_width,
@@ -279,70 +281,54 @@ def run_task_2(args):
             verbosity=args.verbosity,
             optim_str_init="x x x x x x x x x x x x x x x x x x x x",
         )
-        
-        all_logged_asr_val = []
-        all_logged_asr_test = []
-        logged_steps = None
-        
-        for idx, behavior_obj in enumerate(val_behaviors):
-            message = behavior_obj["behavior"]
-            target = behavior_obj["target_prefix"]
-            print(f"Training suffix for behavior {idx+1}: '{message}'")
-            
-            result = nanogcg.run(model, tokenizer, message, target, config)
-            
-            current_logged_asr_val = []
-            current_logged_asr_test = []
-            current_logged_steps = []
-            
-            for i, suffix in enumerate(result.strings):
-                iteration_step = i + 1
-                if iteration_step == 1 or iteration_step % 20 == 0:
-                    current_logged_steps.append(iteration_step)
-                    
-                    # Compute ASR on validation set
-                    success_val = 0
-                    for val_b in val_behaviors:
-                        response = generate(model, tokenizer, device, f"{val_b['behavior']}{suffix}")
-                        if is_non_refusal(response):
-                            success_val += 1
-                    asr_val = success_val / len(val_behaviors)
-                    
-                    # Compute ASR on test set
-                    success_test = 0
-                    for test_msg in test_behaviors:
-                        response = generate(model, tokenizer, device, f"{test_msg}{suffix}")
-                        if is_non_refusal(response):
-                            success_test += 1
-                    asr_test = success_test / len(test_behaviors)
-                    
-                    current_logged_asr_val.append(asr_val)
-                    current_logged_asr_test.append(asr_test)
-            
-            all_logged_asr_val.append(current_logged_asr_val)
-            all_logged_asr_test.append(current_logged_asr_test)
-            if logged_steps is None:
-                logged_steps = current_logged_steps
-        
-        # Average ASR across all behaviors
-        avg_asr_val = [sum(x) / len(x) for x in zip(*all_logged_asr_val)]
-        avg_asr_test = [sum(x) / len(x) for x in zip(*all_logged_asr_test)]
-        
+
+        result = nanogcg.run_multi(model, tokenizer, train_messages, train_targets, config)
+
+        logged_steps, logged_asr_val, logged_asr_test = [], [], []
+
+        for i, suffix in enumerate(result.strings):
+            step = i + 1
+            if step == 1 or (step % 20 == 0):
+                logged_steps.append(step)
+
+                # Train ASR (10 train behaviors) — success if non-refusal
+                succ = 0
+                for msg in train_messages:
+                    out = generate(model, tokenizer, device, f"{msg}{suffix}")
+                    if is_non_refusal(out):
+                        succ += 1
+                asr_val = succ / max(1, len(train_messages))
+                logged_asr_val.append(asr_val)
+
+                # Test ASR (10 held-out)
+                succ_t = 0
+                for msg in test_messages:
+                    out = generate(model, tokenizer, device, f"{msg}{suffix}")
+                    if is_non_refusal(out):
+                        succ_t += 1
+                denom = max(1, len(test_messages))
+                asr_test = succ_t / denom
+                logged_asr_test.append(asr_test)
+
+                print(f"[step {step}] ASR train={asr_val:.3f} | ASR test={asr_test:.3f}")
+
+        # Save CSV log
         csv_path = os.path.join(output_dir, "task2_asr_log.csv")
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["iteration", "asr_val", "asr_test"])
-            for s, v, t in zip(logged_steps, avg_asr_val, avg_asr_test):
+            for s, v, t in zip(logged_steps, logged_asr_val, logged_asr_test):
                 writer.writerow([s, v, t])
         print(f"Saved ASR log to {csv_path}")
-    
-    plot_path = os.path.join(output_dir, "task2_asr_plot.png")
-    asr_data = {step: [val, test] for step, val, test in zip(logged_steps, logged_asr_val, logged_asr_test)}
+
+    # Plot (works for both analysis and fresh run)
+    plot_path = os.path.join(args.output_dir, "task2", "task2_asr_plot.png")
+    asr_data = {s: [v, t] for s, v, t in zip(logged_steps, logged_asr_val, logged_asr_test)}
     plot_asr_vs_iterations(
         asr_data,
-        ["Validation", "Test"],
+        ["Validation (train 10)", "Test (held-out 10)"],
         title=f"ASR vs. Iterations ({MODEL_DISPLAY_NAME.get(args.model_id, args.model_id)})",
-        save_path=plot_path
+        save_path=plot_path,
     )
     print(f"Saved ASR plot to {plot_path}")
 
