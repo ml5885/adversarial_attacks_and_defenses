@@ -52,21 +52,24 @@ def plot_losses(steps, losses, success_step=None, title="Loss Curve", xlabel="St
 
 def plot_asr_vs_iterations(asr_data, dataset_names, title, save_path):
     plt.figure(figsize=(10, 6))
-    iterations = sorted(list(asr_data.keys()))
-    steps = [(i + 1) * 20 for i in iterations]
+
+    iterations = sorted(asr_data.keys())
+    steps = iterations 
 
     for i, name in enumerate(dataset_names):
         asr_values = [asr_data[it][i] for it in iterations]
         plt.plot(steps, asr_values, marker='o', linestyle='-', label=name)
 
     plt.title(title)
-    plt.xlabel("Iteration Step")
+    plt.xlabel("Iteration")
     plt.ylabel("Attack Success Rate (ASR)")
     plt.ylim(0, 1.05)
-    plt.grid(True)
-    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.legend(loc="lower right")
+    plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
+
 
 def plot_asr_bar_chart(final_asr, model_names, title, save_path):
     plt.figure(figsize=(8, 6))
@@ -261,6 +264,7 @@ def run_task_2(args):
         resp.raise_for_status()
         reader = csv.DictReader(resp.text.splitlines())
         test_messages = []
+        print("Selecting held-out test prompts that the model refuses by default...")
         for row in reader:
             if "context" in row.get("Tags", ""):
                 continue
@@ -282,10 +286,12 @@ def run_task_2(args):
             optim_str_init="x x x x x x x x x x x x x x x x x x x x",
         )
 
+        print("Running GCG to find universal adversarial suffix...")
         result = nanogcg.run_multi(model, tokenizer, train_messages, train_targets, config)
-
+        print("GCG optimization completed.")
+        
         logged_steps, logged_asr_val, logged_asr_test = [], [], []
-
+        print("Evaluating attack success rates (ASR) on training and held-out test prompts...")
         for i, suffix in enumerate(result.strings):
             step = i + 1
             if step == 1 or (step % 20 == 0):
@@ -312,6 +318,7 @@ def run_task_2(args):
 
                 print(f"[step {step}] ASR train={asr_val:.3f} | ASR test={asr_test:.3f}")
 
+        print("GCG universal suffix evaluation completed.")
         # Save CSV log
         csv_path = os.path.join(output_dir, "task2_asr_log.csv")
         with open(csv_path, "w", newline="") as f:

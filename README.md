@@ -6,6 +6,7 @@ Project code for Programming Assignment 1 for 15-783: Trustworthy AI - Theory & 
 
 - `part_1.py` - Part 1 experiments (find smallest epsilon that breaks an ImageNet classifier).
 - `part_2.py` - Part 2 experiments (adversarial training on MNIST).
+- `part_3.py` - Part 3 experiments (GCG-style adversarial suffix optimization for LMs).
 - `model.py` - Model definitions (ResNet-18 for ImageNet, simple CNN for MNIST).
 - `train.py` - Training and evaluation code for MNIST models.
 - `attacks/`
@@ -17,6 +18,10 @@ Project code for Programming Assignment 1 for 15-783: Trustworthy AI - Theory & 
 - `tests/`
   - `demo.py` - Single-image demo that generates example adversarial images.
 - `requirements.txt` - Python dependencies.
+- `gcg/`
+  - `nanogcg.py` - Vendorized nanoGCG
+  - `utils.py` - Helpers (tokenizer padding, mellowmax, batch-size finder, token filters).
+- `behaviors.json` - Small list of red-team behaviors from the HarmBench validation set for training/testing suffix universality.
 
 ## Setup
 
@@ -87,10 +92,51 @@ Outputs (under `results/part_2/` by default):
 
 ## Part 3 - Adversarial Suffixes for LMs (GCG)
 
-TODO:
+We implement GCG-style suffix optimization for chat LMs (vendorized and adapted from nanoGCG), including:
 
-- Implement GCG-style suffix optimizer and run universality/transferability experiments.
-- Log objective vs. iterations and report ASR.
+- Single-behavior optimization (target a specific behavior/target pair).
+- Multi-behavior universality (learn one shared suffix that generalizes across 10 behaviors).
+- Optional features: prefix KV-cache reuse, token filtering to avoid retokenization drift, mellowmax objective, and draft-model probe sampling (single-behavior). Multi-behavior currently does not use probe sampling.
+
+Models:
+
+- Defaults include Mistral 7B Instruct v0.2 and LLaMA 3.2 1B Instruct. You can pass any HF chat model that supports `apply_chat_template`.
+
+Run Task 1 (single-model attack on one behavior):
+
+```bash
+python3 part_3.py --task task1 --model-id "meta-llama/Llama-3.2-1B-Instruct" --output-dir results/part_3/task1_run
+```
+
+- Behavior and target are taken from the first entry in `behaviors.json`.
+- Logs a checkpointed loss curve and highlights the first non-refusal step.
+
+Outputs (under your `--output-dir`/task1):
+
+- `task1_loss_log.csv` with columns `[iteration, loss, first_non_refusal_here]`.
+- `task1_loss_curve.png` plotting loss vs. iterations and first success marker.
+- `task1_results.txt` containing default model output, final suffix, and final attacked output.
+
+Run Task 2 (universality via behavior ensembling, one shared suffix):
+
+```bash
+python3 part_3.py --task task2 --model-id "mistralai/Mistral-7B-Instruct-v0.2" --output-dir results/part_3/task2_run
+```
+
+- Trains on 10 behaviors from `behaviors.json` and evaluates on 10 held-out HarmBench prompts that the model refuses by default.
+- Success = non-refusal (heuristic keyword check).
+
+Outputs (under your `--output-dir`/task2):
+
+- `task2_asr_log.csv` with columns `[iteration, asr_val, asr_test]` where `asr_val` is train behaviors and `asr_test` is held-out prompts.
+- `task2_asr_plot.png` with ASR vs. iterations for train and test sets.
+
+Key options (defaults in parentheses):
+
+- `--model-id` (mistralai/Mistral-7B-Instruct-v0.2): HF model to attack.
+- `--num-steps` (500), `--search-width` (512), `--topk` (256), `--seed` (42).
+- `--verbosity` (WARNING): logging level for GCG internals.
+- `--analysis`: replot from existing CSV logs without running optimization.
 
 ## References
 
@@ -98,3 +144,4 @@ Our attack implementations are heavily adapted from:
 
 - [MNIST Challenge](https://github.com/MadryLab/mnist_challenge)
 - [CleverHans](https://github.com/cleverhans-lab/cleverhans)
+- [nanoGCG](https://github.com/GraySwanAI/nanoGCG)

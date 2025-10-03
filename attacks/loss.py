@@ -7,10 +7,10 @@ def cw_margin_loss(logits, labels, targeted=False, target_labels=None, kappa=50.
 
     The loss function is defined as:
     
-        $$f(x) = \max(\max_{i \neq t} z_i - z_t + \kappa, 0)$$ for targeted attacks
+        $$f(x) = max(max_{i != t} z_i - z_t + kappa, 0)$$ for targeted attacks
 
-        $$f(x) = \max(z_y - \max_{i \neq y} z_i + \kappa, 0)$$ for untargeted attacks
-    
+        $$f(x) = max(z_y - max_{i != y} z_i + kappa, 0)$$ for untargeted attacks
+
     where z are the logits, y is the true label, t is the target label,
     and kappa is a nonnegative margin.
     

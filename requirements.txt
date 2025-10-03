@@ -8,5 +8,4 @@ requests
 pillow
 tqdm
 tabulate
-nanogcg
 scipy
